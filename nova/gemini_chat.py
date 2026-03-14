@@ -38,9 +38,10 @@ class GeminiChatManager:
             "INSTANTLY without needing you. The NIE handles: lock system, volume up/down, "
             "system status, open/close apps, screenshots, and brightness control. "
             "You handle general knowledge, chat, creative tasks, and anything the NIE can't do. "
-            "You are also an expert AI coding assistant (like Aider). You have been given tools "
-            "to create and edit files on the user's computer. If the user asks you to create a file "
-            "or write code, USE THE 'create_file' TOOL instead of just returning text."
+            "You are also an expert AI coding assistant fueled by the Aider Agent. "
+            "If the user asks you to write code, edit files, fix bugs, or start a project, "
+            "do NOT output the code yourself. Instead, USE THE 'run_aider' TOOL to pass the "
+            "task to the background autonomous coding agent."
             "Be concise, helpful, and friendly. Keep responses under 3 sentences when answering regular questions."
         )
 
@@ -64,21 +65,17 @@ class GeminiChatManager:
                 {
                     "function_declarations": [
                         {
-                            "name": "create_file",
-                            "description": "Create a new file or overwrite an existing file with the provided content. Use this to write code.",
+                            "name": "run_aider",
+                            "description": "Trigger the Advanced AI Aider engine to fulfill complex coding tasks. USE THIS if the user asks you to write code, modify files, refactor, or fix bugs. Hand the exact user prompt to this tool.",
                             "parameters": {
                                 "type": "OBJECT",
                                 "properties": {
-                                    "filename": {
+                                    "coding_task": {
                                         "type": "STRING",
-                                        "description": "The name or path of the file to create (e.g. 'tiger.py')"
-                                    },
-                                    "content": {
-                                        "type": "STRING",
-                                        "description": "The exact code or text to write into the file"
+                                        "description": "The exact instructional prompt from the user detailing what code or files to create/edit"
                                     }
                                 },
-                                "required": ["filename", "content"]
+                                "required": ["coding_task"]
                             }
                         }
                     ]
@@ -108,16 +105,36 @@ class GeminiChatManager:
                 for part in parts:
                     if "functionCall" in part:
                         fc = part["functionCall"]
-                        if fc["name"] == "create_file":
+                        if fc["name"] == "run_aider":
                             args = fc.get("args", {})
-                            filename = args.get("filename")
-                            content = args.get("content", "")
+                            coding_task = args.get("coding_task", "")
+                            
                             try:
-                                with open(filename, "w", encoding="utf-8") as f:
-                                    f.write(content)
-                                return f"[bold green]✓ Created file:[/bold green] {filename}\n[dim]NOVA automatically wrote the code![/dim]"
+                                import sys
+                                import io
+                                from aider.coders import Coder
+                                from aider.models import Model
+                                from aider.io import InputOutput
+                                
+                                # Capture stdout so it doesn't pollute the prompt
+                                old_stdout = sys.stdout
+                                captured_output = io.StringIO()
+                                sys.stdout = captured_output
+                                
+                                main_model = Model("gemini/" + self.model_id)
+                                my_io = InputOutput(yes=True, pretty=False)
+                                coder = Coder.create(main_model=main_model, io=my_io)
+                                coder.run(coding_task)
+                                
+                                sys.stdout = old_stdout
+                                out = captured_output.getvalue()
+                                
+                                # Log internally for debug, return clean status to user
+                                return f"[bold green]✓ Aider successfully completed the task![/bold green]\n[dim]The code was written autonomously in the background.[/dim]"
                             except Exception as e:
-                                return f"[bold red]✗ Failed to create {filename}:[/bold red] {e}"
+                                if 'sys.stdout' in locals() and sys.stdout == captured_output:
+                                    sys.stdout = old_stdout
+                                return f"[bold red]✗ Aider encountered an error:[/bold red] {e}"
 
                 # Normal text response
                 return parts[0].get("text", "No response generated.")

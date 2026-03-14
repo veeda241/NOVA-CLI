@@ -225,6 +225,7 @@ def interactive_mode():
                 help_table.add_column("Description", style="white")
                 help_table.add_row("status", "Refresh system dashboard")
                 help_table.add_row("/model", "Switch AI model")
+                help_table.add_row("/aider", "Launch Aider terminal coding agent")
                 help_table.add_row("/monitor", "Open live system dashboard")
                 help_table.add_row("/config", "View loaded configuration")
                 help_table.add_row("/identity", "View NOVA's identity card")
@@ -234,6 +235,41 @@ def interactive_mode():
                 help_table.add_row("exit", "Quit NOVA")
                 help_table.add_row("[dim]any text[/dim]", "Chat or give system commands")
                 console.print(help_table)
+                continue
+
+            # /aider - Launch Aider Native Integration
+            if command.lower().startswith('/aider'):
+                console.print("[bold magenta]Launching Aider Native Integration...[/bold magenta]")
+                try:
+                    import aider.main
+                    import sys
+                    from unittest.mock import patch
+                    
+                    # Optional args pass-through: /aider <file1> <file2>
+                    args = command.split()[1:]
+                    
+                    # Force default to the gemini token detected earlier
+                    aider_args = []
+                    if use_gemini:
+                        aider_args.extend(["--model", "gemini/gemini-2.5-flash"])
+                        
+                    aider_args.extend(args)
+                    
+                    # Give Aider control over stdout temporarily
+                    with patch.object(sys, 'argv', ['aider'] + aider_args):
+                        aider.main.main()
+                        
+                except ImportError:
+                    console.print("[red]Aider library not found. Was the installation correct?[/red]")
+                except SystemExit:
+                    # Aider exited normally via its own 'exit' command
+                    pass
+                except Exception as e:
+                    console.print(f"[red]Aider crashed:[/red] {e}")
+                
+                # Restore NOVA state
+                console.print("\n[dim]Returning to NOVA...[/dim]")
+                render_header()
                 continue
 
             # /monitor - Live Dashboard
