@@ -27,3 +27,4 @@
 {"timestamp": "2026-02-17T04:38:42.150893", "user_input": "decrease volume 40", "intent": "VOLUME_DOWN", "action": "VOLUME_DOWN", "result": "Volume set: 60% -> 40%", "permission": "MODIFY", "success": true}
 {"timestamp": "2026-02-17T04:40:48.787028", "user_input": "decrease brightness 30", "intent": "BRIGHTNESS_DOWN", "action": "BRIGHTNESS_DOWN", "result": "Brightness set: 50% -> 30%", "permission": "MODIFY", "success": true}
 {"timestamp": "2026-02-17T04:42:17.329785", "user_input": "cheak battery", "intent": "SYSTEM_STATUS", "action": "SYSTEM_STATUS", "result": "Battery: 100% (Plugged in) | CPU: 8.1% across 16 cores | RAM: 12.9GB / 15.7GB (82.3%) | Disk: 45.2GB free / 354.3GB total", "permission": "READ", "success": true}
+{"timestamp": "2026-03-15T01:48:30.488738", "user_input": "exit\\n", "intent": "BRIGHTNESS_DOWN", "action": "BRIGHTNESS_DOWN", "result": "Brightness set: 19% -> 9%", "permission": "MODIFY", "success": true}

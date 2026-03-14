@@ -12,6 +12,8 @@ if sys.platform == 'win32':
 from nova import __version__
 from nova.chat import chat_manager
 from nova.hf_chat import hf_chat_manager
+from nova.gemini_chat import gemini_chat_manager
+from nova.config import nova_config
 
 try:
     from rich.console import Console
@@ -30,7 +32,8 @@ except ImportError:
 console = Console(file=sys.stdout, force_terminal=True)
 
 # Global state
-use_hf = True
+use_hf = False
+use_gemini = False
 
 def render_header():
     """Renders the full header dashboard once."""
@@ -83,14 +86,21 @@ def render_header():
     
     # Tips
     tips = (
-        "[green]hello[/green] · [green]status[/green] · [green]/model[/green] · [green]clear[/green] · [green]exit[/green] · [yellow]Type to chat![/yellow]"
+        "[green]hello[/green] · [green]status[/green] · [green]/model[/green] · [green]/config[/green] · [green]clear[/green] · [green]exit[/green] · [yellow]Type to chat![/yellow]"
     )
     console.print(Panel(tips, border_style="yellow", title="[bold]Quick Commands[/bold]"))
+    
+    # Show config source
+    cfg_sources = nova_config.loaded_from
+    if cfg_sources:
+        console.print(f"[dim]Config: {', '.join(cfg_sources)}[/dim]")
+    else:
+        console.print("[dim]Config: built-in defaults[/dim]")
     console.rule(style="dim")
 
 def check_model_health():
-    """Checks if the current HF model works, falls back if not."""
-    global use_hf
+    """Checks if the current models work, falls back if not."""
+    global use_hf, use_gemini
     
     fallback_models = [
         ("Qwen/Qwen2.5-7B-Instruct", "Qwen 2.5"),
@@ -99,30 +109,42 @@ def check_model_health():
     ]
     
     with console.status("[bold blue]Performing Smart Health Check...[/bold blue]", spinner="dots") as status:
-        # 1. Check HF
-        if hf_chat_manager.api_token:
+        # 1. Check Gemini First (Fastest, best quality if available)
+        status.update("[bold blue]Testing Google Gemini...[/bold blue]")
+        if gemini_chat_manager.is_available():
+            response = gemini_chat_manager.stream_response("ping")
+            if "Error" not in response:
+                use_gemini = True
+                use_hf = False
+                console.print(f"[dim green]✓ Auto-switched to Google Gemini API[/dim green]")
+                return True
+
+        # 2. Check HF
+        if hf_chat_manager.api_token and len(hf_chat_manager.api_token) > 10 and hf_chat_manager.api_token != "your_token_here":
             for model_id, label in fallback_models:
-                status.update(f"[bold blue]Testing {label}...[/bold blue]")
+                status.update(f"[bold blue]Testing HF {label}...[/bold blue]")
                 hf_chat_manager.set_model(model_id)
                 response = hf_chat_manager.stream_response("ping")
                 
                 if "Error" not in response and "HF Error" not in response:
                     use_hf = True
+                    use_gemini = False
                     console.print(f"[dim green]✓ Auto-switched to working model: {label}[/dim green]")
                     return True
         
-        # 2. Check Ollama if HF fails
+        # 3. Check Ollama if cloud fails
         status.update("[bold blue]Trying Local Ollama...[/bold blue]")
         if chat_manager.check_ollama_ready():
             use_hf = False
-            console.print("[dim yellow]⚠ All HF models failed. Switched to Local Ollama.[/dim yellow]")
+            use_gemini = False
+            console.print("[dim yellow]⚠ All cloud models failed. Switched to Local Ollama.[/dim yellow]")
             return True
             
-        console.print("[dim red]✗ No working AI models found (HF or Local).[/dim red]")
+        console.print("[dim red]✗ No working AI models found (Gemini, HF, or Local).[/dim red]")
         return False
 
 def interactive_mode():
-    global use_hf
+    global use_hf, use_gemini
     
     if not HAS_RICH:
         print("Rich library not found.")
@@ -166,8 +188,16 @@ def interactive_mode():
     
     while True:
         try:
-            prompt_label = "[bold magenta]HF[/bold magenta]" if use_hf else "[bold cyan]LOCAL[/bold cyan]"
-            model_name = hf_chat_manager.model_id if use_hf else "Ollama (TinyLlama)"
+            if use_gemini:
+                prompt_label = "[bold blue]GEMINI[/bold blue]"
+                model_name = gemini_chat_manager.model_id
+            elif use_hf:
+                prompt_label = "[bold magenta]HF[/bold magenta]"
+                model_name = hf_chat_manager.model_id
+            else:
+                prompt_label = "[bold cyan]LOCAL[/bold cyan]"
+                model_name = "Ollama (TinyLlama)"
+                
             command = console.input(f"[bold blue]NOVA[/bold blue] ({prompt_label}) [dim]({model_name})[/dim] [bold blue]>[/bold blue] ")
             
             if command.strip() == "":
@@ -196,6 +226,7 @@ def interactive_mode():
                 help_table.add_row("status", "Refresh system dashboard")
                 help_table.add_row("/model", "Switch AI model")
                 help_table.add_row("/monitor", "Open live system dashboard")
+                help_table.add_row("/config", "View loaded configuration")
                 help_table.add_row("/identity", "View NOVA's identity card")
                 help_table.add_row("/personality", "View NOVA's personality traits")
                 help_table.add_row("/memory", "View memory statistics")
@@ -285,17 +316,36 @@ def interactive_mode():
                 continue
 
             # Model Switching
+            # /config - Show current configuration
+            if command.lower() == '/config':
+                cfg_table = Table(title="NOVA Configuration", border_style="magenta")
+                cfg_table.add_column("Setting", style="cyan")
+                cfg_table.add_column("Value", style="white")
+                cfg_table.add_row("Default Provider", nova_config.get("intelligence.default_provider", "N/A"))
+                cfg_table.add_row("Preferred Engine", nova_config.get("intelligence.preferred_engine", "N/A"))
+                cfg_table.add_row("Temperature", str(nova_config.get("intelligence.temperature", "N/A")))
+                cfg_table.add_row("Max Tokens", str(nova_config.get("intelligence.max_tokens", "N/A")))
+                cfg_table.add_row("NIE Enabled", str(nova_config.get("engine.nie_enabled", True)))
+                cfg_table.add_row("NIE Threshold", str(nova_config.get("agent.system.confidence_threshold", 0.35)))
+                cfg_table.add_row("Personality", str(nova_config.get("consciousness.enable_personality", True)))
+                cfg_table.add_row("Learning", str(nova_config.get("learning.enabled", True)))
+                cfg_table.add_row("Code Mode", str(nova_config.get("agent.code.enabled", True)))
+                cfg_table.add_row("MCP Servers", str(nova_config.get("tools.mcp.enabled", False)))
+                cfg_table.add_row("Config Files", ", ".join(nova_config.loaded_from) or "defaults only")
+                console.print(cfg_table)
+                continue
+
             if command.lower().startswith('/model'):
                 parts = command.split()
-                available_models = {
-                    "1": "google/gemma-2-2b-it",
-                    "2": "meta-llama/Llama-3.2-3B-Instruct",
-                    "3": "mistralai/Mistral-7B-Instruct-v0.3",
-                    "4": "deepseek-ai/DeepSeek-R1-Distill-Llama-8B",
-                    "5": "Qwen/Qwen2.5-7B-Instruct",
-                    "6": "NousResearch/Hermes-3-Llama-3.1-8B",
-                    "7": "local",
-                }
+                
+                # Build model list from config (merged from Aider/Crush/OpenJarvis patterns)
+                config_models = nova_config.get_available_models()
+                available_models = {}
+                for i, model in enumerate(config_models, 1):
+                    available_models[str(i)] = model["id"]
+                # Always add 'local' as last option
+                if not any(m.get("provider") == "ollama" for m in config_models):
+                    available_models[str(len(available_models) + 1)] = "local"
                 
                 if len(parts) == 1:
                     console.print("\n[bold yellow]Available Models:[/bold yellow]")
@@ -346,23 +396,20 @@ def interactive_mode():
                 
                 with console.status("[bold blue]Thinking...[/bold blue]", spinner="dots"):
                     try:
-                        if use_hf:
+                        if use_gemini:
+                            reply = gemini_chat_manager.stream_response(command)
+                        elif use_hf:
                             reply = hf_chat_manager.stream_response(command)
-                            # Legacy NIE action parsing
-                            actions = nie_engine.parse_ai_response(reply)
-                            action_results = []
-                            for act in actions:
-                                r = nie_engine.execute_action(act['type'], act['params'])
-                                action_results.append(f"[bold cyan]NIE Action:[/bold cyan] {r}")
-                            reply = re.sub(r"\[ACTION:.*?\]", "", reply).strip()
                         else:
                             reply = chat_manager.stream_response(command)
-                            actions = nie_engine.parse_ai_response(reply)
-                            action_results = []
-                            for act in actions:
-                                r = nie_engine.execute_action(act['type'], act['params'])
-                                action_results.append(f"[bold cyan]NIE Action:[/bold cyan] {r}")
-                            reply = re.sub(r"\[ACTION:.*?\]", "", reply).strip()
+                        
+                        # Legacy NIE action parsing
+                        actions = nie_engine.parse_ai_response(reply)
+                        action_results = []
+                        for act in actions:
+                            r = nie_engine.execute_action(act['type'], act['params'])
+                            action_results.append(f"[bold cyan]NIE Action:[/bold cyan] {r}")
+                        reply = re.sub(r"\[ACTION:.*?\]", "", reply).strip()
                     except Exception as e:
                         reply = f"Error: {e}"
                         action_results = []

@@ -70,6 +70,9 @@ from nova.nie_data import INTENT_LABELS, NUM_INTENTS
 from nova.consciousness import nova_consciousness
 from nova.memory import nova_memory
 
+# Import unified config
+from nova.config import nova_config
+
 
 # ═══════════════════════════════════════════════════════════════
 # ACTION LOGGER — Audit trail for all OS actions
@@ -198,7 +201,8 @@ class NeuralInteractionEngine:
     """
 
     # Confidence threshold: below this -> fall back to LLM
-    CONFIDENCE_THRESHOLD = 0.35
+    # Loaded from config, with hardcoded fallback
+    CONFIDENCE_THRESHOLD = nova_config.get("agent.system.confidence_threshold", 0.35)
 
     def __init__(self):
         self.os_type = platform.system()
@@ -224,11 +228,14 @@ class NeuralInteractionEngine:
                 self.tokenizer = Tokenizer.from_dict(tok_data)
 
                 # Build model with correct dimensions (auto-selects GPU or CPU)
+                # Dimensions loaded from config (from Crush/OpenJarvis engine pillar)
+                embed_dim = nova_config.get("engine.embed_dim", 64)
+                ff_dim = nova_config.get("engine.ff_dim", 128)
                 self.model = create_model(
                     vocab_size=self.tokenizer.vocab_size,
                     max_len=self.tokenizer.max_len,
-                    embed_dim=64,
-                    ff_dim=128,
+                    embed_dim=embed_dim,
+                    ff_dim=ff_dim,
                     num_classes=NUM_INTENTS,
                 )
                 self.model.load(model_path)
