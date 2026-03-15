@@ -131,6 +131,7 @@ PERMISSION_LEVELS = {
     "LOCK_SYSTEM":     "EXECUTE",    # Locks workstation
     "SHUTDOWN":        "EXECUTE",    # SYSTEM CRITICAL
     "RESTART":         "EXECUTE",    # SYSTEM CRITICAL
+    "RUN_CODE":        "EXECUTE",    # Runs local code
     "UNKNOWN":         "NONE",       # No action needed
 }
 
@@ -355,6 +356,8 @@ class NeuralInteractionEngine:
                 return self._shutdown_system()
             elif intent == "RESTART":
                 return self._restart_system()
+            elif intent == "RUN_CODE":
+                return self._run_interpreter(original_text)
             else:
                 return f"Intent '{intent}' recognized but no action defined."
         except Exception as e:
@@ -419,6 +422,44 @@ class NeuralInteractionEngine:
                 return f"Restart not implemented for {self.os_type}."
         except Exception as e:
             return f"Restart failed: {e}"
+
+    def _run_interpreter(self, original_text: str) -> str:
+        """Run Open Interpreter to execute code tasks."""
+        try:
+            from interpreter import interpreter
+            
+            # Configure interpreter for speed and safety
+            # We use Groq as the default for the interpreter too if API key is present
+            groq_key = os.getenv("GROQ_API_KEY")
+            if groq_key:
+                interpreter.llm.model = "groq/llama-3.3-70b-versatile"
+                interpreter.llm.api_key = groq_key
+            
+            interpreter.auto_run = True # NOVA usually handles its own confirmation or the user expects it
+            
+            # Extract the actual task if it starts with "run code" or similar
+            task = original_text
+            for prefix in ["run code ", "execute ", "interpreter ", "use python to ", "solve this using python "]:
+                if task.lower().startswith(prefix):
+                    task = task[len(prefix):].strip()
+                    break
+            
+            # Start the interpreter chat
+            # We capture the response
+            print(f"[bold cyan]NIE > Using Open Interpreter for:[/bold cyan] {task}")
+            response = interpreter.chat(task)
+            
+            # Interpreter returns a list of messages
+            if isinstance(response, list) and len(response) > 0:
+                last_msg = response[-1].get("content", "Code executed successfully.")
+                return f"Interpreter Result: {last_msg}"
+            
+            return "Code execution initiated."
+            
+        except ImportError:
+            return "Open Interpreter not installed. Run: pip install open-interpreter"
+        except Exception as e:
+            return f"Interpreter failed: {e}"
 
 
     def _volume_up(self, original_text: str = "") -> str:

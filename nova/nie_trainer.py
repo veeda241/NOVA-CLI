@@ -306,6 +306,8 @@ def train():
         "increase brightness", "make it brighter",
         "set brightness to 80", "brightness 60",
         "decrease brightness", "dim the screen",
+        "run this code", "solve using python",
+        "execute the interpreter", "plot a sine wave",
         "tell me a joke", "what's the weather",
         "hello there", "system status",
         "open calculator", "close task manager",

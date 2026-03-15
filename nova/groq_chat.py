@@ -1,37 +1,38 @@
 """
-NOVA Gemini Chat Manager
-=========================
-Uses Google's Gemini API via the generativelanguage REST endpoint.
-No extra SDK needed — just requests + your GEMINI_API_KEY.
+NOVA Groq Chat Manager
+======================
+Uses Groq API via their OpenAI-compatible endpoint.
 """
 
 import os
 import requests
+import json
 from rich.console import Console
 
 console = Console()
 
 
-class GeminiChatManager:
-    """Chat manager for Google Gemini models via REST API."""
+class GroqChatManager:
+    """Chat manager for Groq models via REST API."""
 
-    def __init__(self, model_id="gemini-2.5-flash"):
+    def __init__(self, model_id="llama-3.3-70b-versatile"):
         self.model_id = model_id
-        self.api_key = os.getenv("GEMINI_API_KEY", "")
-        self.base_url = "https://generativelanguage.googleapis.com/v1beta"
-        self.history = [] # Format: [{"role": "user"/"model", "parts": [{"text": "..."}]}]
+        # Temporarily hardcoding for testing as requested
+        self.api_key = os.getenv("GROQ_API_KEY")
+        self.base_url = "https://api.groq.com/openai/v1/chat/completions"
+        self.history = []
 
     def set_model(self, model_id):
         self.model_id = model_id
 
     def is_available(self) -> bool:
-        """Check if Gemini API key is configured."""
+        """Check if Groq API key is configured."""
         return bool(self.api_key) and len(self.api_key) > 10
 
     def stream_response(self, user_input: str) -> str:
-        """Send a message to Gemini and return the response."""
+        """Send a message to Groq and return the response."""
         if not self.is_available():
-            return "Error: GEMINI_API_KEY not set. Get one at https://aistudio.google.com/apikey"
+            return "Error: GROQ_API_KEY not set. Get one at console.groq.com"
 
         system_prompt = (
             "You are NOVA, a Neural Interaction Engine running on a Windows PC. "
@@ -47,70 +48,71 @@ class GeminiChatManager:
             "Be concise, helpful, and friendly. Keep responses under 3 sentences when answering regular questions."
         )
 
-        url = f"{self.base_url}/models/{self.model_id}:generateContent?key={self.api_key}"
-
         # Add user input to history
-        self.history.append({"role": "user", "parts": [{"text": user_input}]})
+        self.history.append({"role": "user", "content": user_input})
         
         # Keep history manageable
         if len(self.history) > 20:
             self.history = self.history[-20:]
 
         payload = {
-            "system_instruction": {
-                "parts": [{"text": system_prompt}]
-            },
-            "contents": self.history,
-            "generationConfig": {
-                "temperature": 0.7,
-                "maxOutputTokens": 1000,
-            },
+            "model": self.model_id,
+            "messages": [
+                {"role": "system", "content": system_prompt}
+            ] + self.history,
+            "temperature": 0.7,
+            "max_tokens": 1000,
             "tools": [
                 {
-                    "function_declarations": [
-                        {
-                            "name": "run_aider",
-                            "description": "Trigger the Advanced AI Aider engine to fulfill complex coding tasks. USE THIS if the user asks you to write code, modify files, refactor, or fix bugs. Hand the exact user prompt to this tool.",
-                            "parameters": {
-                                "type": "OBJECT",
-                                "properties": {
-                                    "coding_task": {
-                                        "type": "STRING",
-                                        "description": "The exact instructional prompt from the user detailing what code or files to create/edit"
-                                    }
-                                },
-                                "required": ["coding_task"]
-                            }
+                    "type": "function",
+                    "function": {
+                        "name": "run_aider",
+                        "description": "Trigger the Advanced AI Aider engine to fulfill complex coding tasks. USE THIS if the user asks you to write code, modify files, refactor, or fix bugs. Hand the exact user prompt to this tool.",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {
+                                "coding_task": {
+                                    "type": "string",
+                                    "description": "The exact instructional prompt from the user detailing what code or files to create/edit"
+                                }
+                            },
+                            "required": ["coding_task"]
                         }
-                    ]
+                    }
                 }
-            ]
+            ],
+            "tool_choice": "auto"
         }
 
         try:
             res = requests.post(
-                url,
+                self.base_url,
                 json=payload,
-                headers={"Content-Type": "application/json"},
+                headers={
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bearer {self.api_key}"
+                },
                 timeout=30,
             )
 
             if res.status_code == 200:
                 data = res.json()
-                candidates = data.get("candidates", [])
-                if not candidates:
-                    return "Gemini returned an empty response."
+                choices = data.get("choices", [])
+                if not choices:
+                    return "Groq returned an empty response."
                 
-                parts = candidates[0].get("content", {}).get("parts", [])
-                if not parts:
-                    return "Gemini returned an empty response."
-
+                message = choices[0].get("message", {})
+                
                 # Check for Function Call (Aider Coder logic)
-                for part in parts:
-                    if "functionCall" in part:
-                        fc = part["functionCall"]
-                        if fc["name"] == "run_aider":
-                            args = fc.get("args", {})
+                if "tool_calls" in message and message["tool_calls"]:
+                    for tool_call in message["tool_calls"]:
+                        if tool_call.get("type") == "function" and tool_call["function"].get("name") == "run_aider":
+                            args_str = tool_call["function"].get("arguments", "{}")
+                            try:
+                                args = json.loads(args_str)
+                            except:
+                                args = {}
+                                
                             coding_task = args.get("coding_task", "")
                             
                             try:
@@ -125,7 +127,8 @@ class GeminiChatManager:
                                 captured_output = io.StringIO()
                                 sys.stdout = captured_output
                                 
-                                main_model = Model("gemini/" + self.model_id)
+                                # Append groq/ to model ID for litellm mapping inside Aider
+                                main_model = Model("groq/" + self.model_id)
                                 my_io = InputOutput(yes=True, pretty=False)
                                 coder = Coder.create(main_model=main_model, io=my_io)
                                 coder.run(coding_task)
@@ -137,17 +140,18 @@ class GeminiChatManager:
                                 files_involved = [os.path.basename(f) for f in coder.abs_fnames]
                                 files_str = ", ".join(files_involved) if files_involved else "Project files"
                                 location = os.getcwd()
-
-                                # Add tool call and response to history for proper context
-                                # Ensure we have reference to 'part' which contains the function call
-                                self.history.append({"role": "model", "parts": [part]}) 
+                                
+                                # Add tool call and tool response to history for proper context
+                                self.history.append(message) # The assistant's tool call
                                 self.history.append({
-                                    "role": "user", 
-                                    "parts": [{"text": f"Tool response from run_aider: Aider successfully completed the task. Files modified: {files_str}"}]
+                                    "role": "tool",
+                                    "name": "run_aider",
+                                    "tool_call_id": tool_call.get("id"),
+                                    "content": f"Aider successfully completed: {coding_task}. Modified files: {files_str}"
                                 })
                                 
                                 success_msg = (
-                                    f"[bold green]✓ Aider successfully completed the task on Gemini![/bold green]\n"
+                                    f"[bold green]✓ Aider successfully completed the task on Groq![/bold green]\n"
                                     f"[bold white]Files:[/bold white] {files_str}\n"
                                     f"[bold white]Location:[/bold white] [dim]{location}[/dim]\n"
                                     f"[dim]The code for '{coding_task}' was written autonomously in the background.[/dim]"
@@ -159,28 +163,26 @@ class GeminiChatManager:
                                 return f"[bold red]✗ Aider encountered an error:[/bold red] {e}"
 
                 # Normal text response
-                reply = parts[0].get("text", "No response generated.")
-                self.history.append({"role": "model", "parts": [{"text": reply}]})
+                reply = message.get("content", "No response generated.")
+                self.history.append({"role": "assistant", "content": reply})
                 return reply
 
             elif res.status_code == 400:
-                return f"Gemini Error: Bad request — {res.json().get('error', {}).get('message', res.text)}"
-            elif res.status_code == 403:
-                return "Gemini Error: API key invalid or quota exceeded."
+                return f"Groq Error: Bad request — {res.json().get('error', {}).get('message', res.text)}"
+            elif res.status_code == 401:
+                return "Groq Error: API key invalid or Unauthorized."
             elif res.status_code == 429:
-                return "Gemini Error: Rate limited. Wait a moment and try again."
-            elif res.status_code == 404:
-                return f"Gemini Error: Model '{self.model_id}' not found. Try 'gemini-2.0-flash'."
+                return "Groq Error: Rate limited. Wait a moment and try again."
             else:
-                return f"Gemini API Error ({res.status_code}): {res.text[:200]}"
+                return f"Groq API Error ({res.status_code}): {res.text[:200]}"
 
         except requests.exceptions.Timeout:
-            return "Gemini Error: Request timed out. Check your internet connection."
+            return "Groq Error: Request timed out. Check your internet connection."
         except requests.exceptions.ConnectionError:
-            return "Gemini Error: Could not connect. Check your internet connection."
+            return "Groq Error: Could not connect. Check your internet connection."
         except Exception as e:
-            return f"Gemini Error: {e}"
+            return f"Groq Error: {e}"
 
 
 # Global instance
-gemini_chat_manager = GeminiChatManager()
+groq_chat_manager = GroqChatManager()

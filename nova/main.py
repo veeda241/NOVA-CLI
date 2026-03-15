@@ -13,11 +13,13 @@ from nova import __version__
 from nova.chat import chat_manager
 from nova.hf_chat import hf_chat_manager
 from nova.gemini_chat import gemini_chat_manager
+from nova.groq_chat import groq_chat_manager
 from nova.config import nova_config
 
 try:
-    from rich.console import Console
+    from rich.console import Console, Group
     from rich.panel import Panel
+    from rich import box
     from rich.text import Text
     from rich.align import Align
     from rich.table import Table
@@ -34,12 +36,13 @@ console = Console(file=sys.stdout, force_terminal=True)
 # Global state
 use_hf = False
 use_gemini = False
+use_groq = False
 
 def render_header():
     """Renders the full header dashboard once."""
     console.clear()
     
-    # ASCII Logo
+    # ASCII Logo (Restored)
     ascii_art = """
     ███    ██  ██████  ██    ██  █████ 
     ████   ██ ██    ██ ██    ██ ██   ██
@@ -48,7 +51,10 @@ def render_header():
     ██   ████  ██████    ████   ██   ██
     """
     console.print(Panel(
-        Align.center(Text(ascii_art, style="bold blue")),
+        Align.center(Group(
+            Text(ascii_art, style="bold blue"),
+            Text("Neural Optimized Virtual Assistant", style="bold white")
+        )),
         style="blue",
     ))
     
@@ -100,7 +106,7 @@ def render_header():
 
 def check_model_health():
     """Checks if the current models work, falls back if not."""
-    global use_hf, use_gemini
+    global use_hf, use_gemini, use_groq
     
     fallback_models = [
         ("Qwen/Qwen2.5-7B-Instruct", "Qwen 2.5"),
@@ -108,28 +114,39 @@ def check_model_health():
         ("google/gemma-2-2b-it", "Gemma 2B"),
     ]
     
-    with console.status("[bold blue]Performing Smart Health Check...[/bold blue]", spinner="dots") as status:
-        # 1. Check Gemini First (Fastest, best quality if available)
-        status.update("[bold blue]Testing Google Gemini...[/bold blue]")
+    with console.status("[bold blue]Core Synchronization...[/bold blue]", spinner="dots") as status:
+        # 0. Check Groq First (Highest priority because of speed!)
+        status.update("[bold blue]Linking Groq LPU...[/bold blue]")
+        if groq_chat_manager.is_available():
+            response = groq_chat_manager.stream_response("ping")
+            if "Error" not in response:
+                use_groq = True
+                use_gemini = False
+                use_hf = False
+                console.print(f"[dim green]✓ Signal: Groq API active (Hyper-speed locked)[/dim green]")
+                return True
+
+        # 1. Check Gemini Wait List First (Fastest, best quality if available)
+        status.update("[bold blue]Linking Google Gemini...[/bold blue]")
         if gemini_chat_manager.is_available():
             response = gemini_chat_manager.stream_response("ping")
             if "Error" not in response:
                 use_gemini = True
                 use_hf = False
-                console.print(f"[dim green]✓ Auto-switched to Google Gemini API[/dim green]")
+                console.print(f"[dim green]✓ Signal: Google Gemini API active[/dim green]")
                 return True
 
         # 2. Check HF
         if hf_chat_manager.api_token and len(hf_chat_manager.api_token) > 10 and hf_chat_manager.api_token != "your_token_here":
             for model_id, label in fallback_models:
-                status.update(f"[bold blue]Testing HF {label}...[/bold blue]")
+                status.update(f"[bold blue]Linking HF {label}...[/bold blue]")
                 hf_chat_manager.set_model(model_id)
                 response = hf_chat_manager.stream_response("ping")
                 
                 if "Error" not in response and "HF Error" not in response:
                     use_hf = True
-                    use_gemini = False
-                    console.print(f"[dim green]✓ Auto-switched to working model: {label}[/dim green]")
+                    use_gemini = False # Ensure other flags are off
+                    console.print(f"[dim yellow]⚠ Signal: Switched to HF Fallback ({label})[/dim yellow]")
                     return True
         
         # 3. Check Ollama if cloud fails
@@ -144,7 +161,7 @@ def check_model_health():
         return False
 
 def interactive_mode():
-    global use_hf, use_gemini
+    global use_hf, use_gemini, use_groq
     
     if not HAS_RICH:
         print("Rich library not found.")
@@ -173,7 +190,8 @@ def interactive_mode():
             f"Intents: {', '.join(nie_info['intents'])}\n"
             f"  [dim]System commands are handled INSTANTLY (<1ms) without LLM[/dim]",
             border_style="cyan",
-            title="[bold]NIE Status[/bold]"
+            title="[bold]NIE Status[/bold]",
+            subtitle=Text("Neural Operating Virtual Agent • v1.0", style="dim cyan")
         ))
     else:
         console.print("[dim yellow]NIE not loaded. Run: python -m nova.nie_trainer[/dim yellow]")
@@ -188,17 +206,16 @@ def interactive_mode():
     
     while True:
         try:
-            if use_gemini:
-                prompt_label = "[bold blue]GEMINI[/bold blue]"
-                model_name = gemini_chat_manager.model_id
+            if use_groq:
+                pass
+            elif use_gemini:
+                pass
             elif use_hf:
-                prompt_label = "[bold magenta]HF[/bold magenta]"
-                model_name = hf_chat_manager.model_id
+                pass
             else:
-                prompt_label = "[bold cyan]LOCAL[/bold cyan]"
-                model_name = "Ollama (TinyLlama)"
+                pass
                 
-            command = console.input(f"[bold blue]NOVA[/bold blue] ({prompt_label}) [dim]({model_name})[/dim] [bold blue]>[/bold blue] ")
+            command = console.input(f"[bold blue]NOVA[/bold blue] > ")
             
             if command.strip() == "":
                 continue
@@ -248,9 +265,11 @@ def interactive_mode():
                     # Optional args pass-through: /aider <file1> <file2>
                     args = command.split()[1:]
                     
-                    # Force default to the gemini token detected earlier
+                    # Force default to the respective key
                     aider_args = []
-                    if use_gemini:
+                    if use_groq:
+                        aider_args.extend(["--model", f"groq/{groq_chat_manager.model_id}"])
+                    elif use_gemini:
                         aider_args.extend(["--model", "gemini/gemini-2.5-flash"])
                         
                     aider_args.extend(args)
@@ -432,7 +451,9 @@ def interactive_mode():
                 
                 with console.status("[bold blue]Thinking...[/bold blue]", spinner="dots"):
                     try:
-                        if use_gemini:
+                        if use_groq:
+                            reply = groq_chat_manager.stream_response(command)
+                        elif use_gemini:
                             reply = gemini_chat_manager.stream_response(command)
                         elif use_hf:
                             reply = hf_chat_manager.stream_response(command)

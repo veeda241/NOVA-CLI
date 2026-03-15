@@ -29,7 +29,8 @@ INTENT_LABELS = {
     8: "BRIGHTNESS_DOWN",
     9: "SHUTDOWN",
     10: "RESTART",
-    11: "UNKNOWN",
+    11: "RUN_CODE",
+    12: "UNKNOWN",
 }
 
 LABEL_TO_ID = {v: k for k, v in INTENT_LABELS.items()}
@@ -357,10 +358,22 @@ TRAINING_DATA = [
     ("restart my computer", 10),
     ("restart nova and pc", 10),
 
-    # ── Category 11: UNKNOWN (conversational / misc) ──
-    ("tell me a joke", 11),
-    ("what is the weather", 11),
-    ("hello there", 11),
+    # ── Category 11: RUN_CODE ──
+    ("run this code", 11),
+    ("use the interpreter to solve this", 11),
+    ("execute this python script", 11),
+    ("calculate the sum of the first 100 primes using code", 11),
+    ("plot a sine wave using the interpreter", 11),
+    ("run a script to find all large files", 11),
+    ("analyze this csv file using python", 11),
+    ("execute code", 11),
+    ("run interpreter", 11),
+    ("solve this using python", 11),
+
+    # ── Category 12: UNKNOWN (conversational / misc) ──
+    ("tell me a joke", 12),
+    ("what is the weather", 12),
+    ("hello there", 12),
     ("how are you doing", 11),
     ("what is your name", 11),
     ("who created you", 11),

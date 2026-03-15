@@ -5,7 +5,7 @@ from rich.markdown import Markdown, Text
 console = Console()
 
 class ChatManager:
-    def __init__(self, model_name="tinyllama"):
+    def __init__(self, model_name="qwen2.5:1.5b"):
         self.model_name = model_name
         self.history = []
 
