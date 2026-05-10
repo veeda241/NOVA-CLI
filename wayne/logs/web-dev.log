@@ -1,0 +1,27 @@
+
+> wayne-web@1.0.0 dev
+> next dev
+
+▲ Next.js 16.3.0-canary.16 (Turbopack)
+- Local:         http://localhost:3000
+- Network:       http://26.15.204.220:3000
+- Environments: .env.local
+✓ Ready in 4.1s
+
+○ Compiling / ...
+ GET / 200 in 5.3s (next.js: 5.0s, application-code: 317ms)
+ GET / 200 in 158ms (next.js: 12ms, application-code: 146ms)
+ GET / 200 in 194ms (next.js: 29ms, application-code: 165ms)
+ GET / 200 in 127ms (next.js: 6ms, application-code: 121ms)
+ GET /api/learning/stats 200 in 7.7s (next.js: 676ms, application-code: 7.1s)
+ GET / 200 in 114ms (next.js: 6ms, application-code: 108ms)
+ GET /api/learning/stats 200 in 6.5s (next.js: 3ms, application-code: 6.5s)
+ GET / 200 in 83ms (next.js: 3ms, application-code: 80ms)
+ GET / 200 in 123ms (next.js: 6ms, application-code: 117ms)
+ GET / 200 in 113ms (next.js: 8ms, application-code: 105ms)
+ GET / 200 in 171ms (next.js: 11ms, application-code: 160ms)
+ GET /auth/google 307 in 343ms (next.js: 307ms, application-code: 36ms)
+ GET /auth/callback 200 in 990ms (next.js: 853ms, application-code: 137ms)
+ GET / 200 in 95ms (next.js: 4ms, application-code: 91ms)
+ GET /auth/google 307 in 50ms (next.js: 45ms, application-code: 5ms)
+ GET /auth/callback 200 in 59ms (next.js: 5ms, application-code: 54ms)

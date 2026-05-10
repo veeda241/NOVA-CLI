@@ -1,0 +1,99 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  min-height: 100%;
+  background: #060c14;
+  color: #d9f8ff;
+}
+
+body {
+  margin: 0;
+}
+
+button,
+input {
+  font: inherit;
+}
+
+::-webkit-scrollbar {
+  width: 8px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(0, 212, 255, 0.28);
+  border-radius: 99px;
+}
+
+.wayne-border {
+  border: 1px solid rgba(0, 212, 255, 0.2);
+}
+
+.voice-orb {
+  position: relative;
+  display: grid;
+  width: 200px;
+  height: 200px;
+  place-items: center;
+  border-radius: 999px;
+  background: #0d1f38;
+  border: 1px solid rgba(0, 212, 255, 0.35);
+  box-shadow: 0 0 28px rgba(0, 212, 255, 0.55);
+  font-family: var(--font-orbitron), monospace;
+  letter-spacing: 0.08em;
+}
+
+.voice-orb.listening {
+  animation: voicePulse 1.2s ease-in-out infinite;
+}
+
+.voice-orb.listening::before,
+.voice-orb.listening::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border: 1px solid rgba(0, 212, 255, 0.4);
+  border-radius: inherit;
+  animation: voiceRipple 1.8s ease-out infinite;
+}
+
+.voice-orb.listening::after {
+  animation-delay: 0.45s;
+}
+
+.voice-orb.thinking {
+  background:
+    linear-gradient(#0d1f38, #0d1f38) padding-box,
+    conic-gradient(from 0deg, #ffaa00 0 270deg, transparent 270deg 360deg) border-box;
+  border: 5px solid transparent;
+  animation: voiceSpin 1s linear infinite;
+}
+
+.voice-orb.interrupted {
+  animation: voiceFlash 0.5s ease-out;
+}
+
+@keyframes voicePulse {
+  0%, 100% { transform: scale(1); box-shadow: 0 0 24px rgba(0, 212, 255, 0.45); }
+  50% { transform: scale(1.05); box-shadow: 0 0 44px rgba(0, 212, 255, 0.85); }
+}
+
+@keyframes voiceRipple {
+  from { transform: scale(1); opacity: 0.7; }
+  to { transform: scale(1.8); opacity: 0; }
+}
+
+@keyframes voiceSpin {
+  to { transform: rotate(360deg); }
+}
+
+@keyframes voiceFlash {
+  0% { background: rgba(255, 68, 85, 0.9); box-shadow: 0 0 54px rgba(255, 68, 85, 0.9); }
+  100% { background: #0d1f38; }
+}

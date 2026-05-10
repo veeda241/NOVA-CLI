@@ -1,0 +1,35 @@
+INFO:     Started server process [15488]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
+INFO:     127.0.0.1:51201 - "WebSocket /ws/track/laptop-001" [accepted]
+INFO:     connection open
+INFO:     127.0.0.1:51200 - "WebSocket /ws/commands/laptop-001" [accepted]
+INFO:     connection open
+INFO:     connection closed
+INFO:     127.0.0.1:51171 - "WebSocket /ws/track/laptop-001" [accepted]
+INFO:     connection open
+INFO:     connection closed
+INFO:     127.0.0.1:53323 - "WebSocket /ws/track/laptop-001" [accepted]
+INFO:     connection open
+INFO:     connection closed
+INFO:     127.0.0.1:53252 - "WebSocket /ws/track/laptop-001" [accepted]
+INFO:     connection open
+INFO:     connection closed
+INFO:     127.0.0.1:55318 - "WebSocket /ws/track/laptop-001" [accepted]
+INFO:     connection open
+INFO:     connection closed
+INFO:     127.0.0.1:49186 - "WebSocket /ws/track/laptop-001" [accepted]
+INFO:     connection open
+INFO:     connection closed
+INFO:     127.0.0.1:57024 - "WebSocket /ws/track/laptop-001" [accepted]
+INFO:     connection open
+INFO:     connection closed
+INFO:     127.0.0.1:62838 - "WebSocket /ws/track/laptop-001" [accepted]
+INFO:     connection open
+INFO:     connection closed
+INFO:     127.0.0.1:51371 - "WebSocket /ws/track/laptop-001" [accepted]
+INFO:     connection open
+INFO:     connection closed
+INFO:     127.0.0.1:63288 - "WebSocket /ws/track/laptop-001" [accepted]
+INFO:     connection open
