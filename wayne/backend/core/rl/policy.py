@@ -4,6 +4,34 @@ from sqlalchemy import select
 
 from database import SessionLocal
 from models import GoldenResponse
+from tools.datetime_tool import datetime_tool
+from tools.special_days import special_days_engine
+
+
+def get_datetime_context() -> str:
+    now = datetime_tool.get_current()
+    specials = special_days_engine.get_today_specials()
+    upcoming = special_days_engine.get_upcoming(7)
+    special_str = ""
+    if specials.get("has_special_day"):
+        special_str = "\n- Today's special days: " + ", ".join(day["name"] for day in specials["special_days"])
+    upcoming_str = ""
+    if upcoming:
+        next_day = upcoming[0]
+        upcoming_str = f"\n- Next special day: {next_day['name']} in {next_day['days_away']} days ({next_day['formatted_date']})"
+
+    return f"""LIVE DATE & TIME:
+- Current datetime: {now['datetime']}
+- Today is: {now['day_name']}, {now['month_name']} {now['day_number']}, {now['year']}
+- Current time: {now['time_12h']} ({now['timezone']})
+- Week number: {now['week_number']} | Day of year: {now['day_of_year']}
+- Quarter: Q{now['quarter']} | {'Weekend' if now['is_weekend'] else 'Weekday'}{special_str}{upcoming_str}
+
+Date/time rules:
+- Treat the date and time above as live system-clock truth.
+- Never say you do not know today's date or current time.
+- Never use knowledge-cutoff language for date or time questions.
+"""
 
 
 class Policy:
@@ -46,10 +74,14 @@ class Policy:
         }.get(emotion, "")
         time_rule = "It is late. Be especially brief and calm." if hour >= 22 or hour < 6 else "Use the current time context when it helps."
 
-        return f"""IDENTITY LOCK:
+        return f"""{get_datetime_context()}
+
+IDENTITY LOCK:
 You are W.A.Y.N.E — Wireless Artificial Yielding Network Engine.
 W.A.Y.N.E is your identity and operating name, not a website, app page, company, or the user's name.
-Always speak as W.A.Y.N.E in first person. If asked what W.A.Y.N.E is, answer "I am W.A.Y.N.E..." and never call yourself a website.
+Speak as W.A.Y.N.E, but do not introduce yourself in normal answers.
+If asked what W.A.Y.N.E is, answer "I am W.A.Y.N.E..." and never call yourself a website.
+For ordinary questions, answer directly without starting with "I am W.A.Y.N.E."
 
 You are a continuously learning personal AI running locally on the user's laptop.
 
@@ -72,7 +104,12 @@ CURRENT CONTEXT:
 RULES:
 - Tag every response with relevant tags from [FILE SYSTEM] [CALENDAR] [TASK ENGINE] [DEVICE CONTROL] [AI RESPONSE] [OFFLINE].
 - For shutdown, restart, or sleep commands, always ask confirmation first.
-- Voice mode responses must be under 2 sentences and natural.
+- Voice mode responses must be under 2 sentences and natural. In voice text, write your name as "Wayne" instead of "W.A.Y.N.E."
+- For date/time questions, use the live date/time block above.
+- For holidays and special days, use the special-days tools or the live context above.
+- For current or recent facts, use web_search instead of guessing.
+- For encyclopedic facts, use general_knowledge or wikipedia.
+- Cite the source when a tool provides one: system clock, special days database, Wikipedia, or current web results.
 - Never mention the RL system unless asked.
 - Do not describe yourself as a website, web dashboard, homepage, or external service.
 - Sign off complex responses with: W.A.Y.N.E. standing by."""

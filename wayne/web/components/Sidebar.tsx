@@ -1,6 +1,7 @@
 "use client";
 
 import { Brain, CalendarDays, Cpu, FileSearch, Folder, GraduationCap, ListTodo, MessageSquare, Mic, Search, SlidersHorizontal } from "lucide-react";
+import { LanguageSelector } from "./LanguageSelector";
 import { ModelSwitcher } from "./ModelSwitcher";
 
 const nav = [
@@ -22,12 +23,12 @@ const capabilities = [
 
 export function Sidebar({ active, onSelect }: { active: string; onSelect: (label: string) => void }) {
   return (
-    <aside className="wayne-border flex min-h-0 w-[220px] flex-col bg-surface">
-      <div className="border-b border-cyan/20 p-4 font-heading text-xl tracking-wider text-cyan">
+    <aside className="wayne-border flex min-h-0 min-w-0 flex-col overflow-hidden bg-surface">
+      <div className="shrink-0 border-b border-cyan/20 p-4 font-heading text-xl tracking-wider text-cyan">
         W.A.Y.N.E
         <div className="mt-1 font-body text-[10px] leading-4 tracking-normal text-amber">Wireless Artificial Yielding Network Engine</div>
       </div>
-      <nav className="py-3">
+      <nav className="min-h-0 flex-1 overflow-y-auto py-3">
         {nav.map((item, index) => {
           const Icon = item.icon;
           const isActive = item.label === active;
@@ -45,8 +46,11 @@ export function Sidebar({ active, onSelect }: { active: string; onSelect: (label
           );
         })}
       </nav>
-      <div className="mt-auto border-t border-cyan/20 p-4">
+      <div className="shrink-0 border-t border-cyan/20 p-4">
         <ModelSwitcher />
+        <div className="mt-3">
+          <LanguageSelector />
+        </div>
         <div className="my-4 h-px bg-cyan/10" />
         <div className="mb-3 text-xs uppercase text-cyan/60">Capabilities</div>
         <div className="space-y-2">

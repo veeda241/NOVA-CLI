@@ -2,6 +2,7 @@ __pycache__/
 *.pyc
 venv/
 .venv/
+.venv-*/
 node_modules/
 .next/
 .env
@@ -10,3 +11,8 @@ dist/
 build/
 *.egg-info/
 .aider*
+*.log
+wayne/logs/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/

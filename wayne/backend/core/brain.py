@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import time
 from collections.abc import AsyncGenerator
 from typing import Any
@@ -18,9 +19,16 @@ from tools.device_control import (
 )
 from tools.file_tool import list_files, open_file
 from tools.file_engine import file_engine
+from tools.datetime_tool import datetime_tool
+from tools.knowledge_tool import knowledge_tool
 from tools.pc_manager import pc_manager
+from tools.special_days import special_days_engine
 from tools.task_tool import manage_tasks
+from tools.web_search_tool import web_search
+from tools.wikipedia_tool import wikipedia
+from core.language_engine import SUPPORTED_LANGUAGES, language_engine
 from core.rl.agent import agent
+from core.rl.policy import get_datetime_context
 from core.rl_engine import detect_intent, rl_engine
 
 load_dotenv()
@@ -71,6 +79,16 @@ Available tools:
   Use when: user says list files, show folder, what's in directory
 - pc_manager: args: operation, params (object)
   Use when: user says clear cache, free memory, kill process, startup, disk cleanup, network, speed test, performance, trash, DNS, registry
+- get_datetime: args: timezone (string optional, default "auto")
+  Use when: user asks time, date, day, what day it is, calendar, timezone
+- get_special_days: args: query_type (today/upcoming/specific), date (YYYY-MM-DD optional), days_ahead (int optional), country (string default "IN")
+  Use when: user asks holidays, festivals, special days, observances, upcoming events
+- general_knowledge: args: query (string), source (auto/web/wikipedia/local)
+  Use when: user asks factual questions, definitions, history, science, geography, explain, who/what/where
+- web_search: args: query (string), max_results (int default 5)
+  Use when: user asks latest, current, today, news, live data, weather, scores, prices
+- wikipedia: args: query (string), get_sections (boolean)
+  Use when: user asks encyclopedic facts about people, places, events, or concepts
 """
 
 SYSTEM_PROMPT = """IDENTITY LOCK:
@@ -80,6 +98,8 @@ not an app page, not a company, and not the user's name.
 When asked who or what W.A.Y.N.E is, answer in first person:
 "I am W.A.Y.N.E..." Never say "W.A.Y.N.E is a website" or
 "the W.A.Y.N.E website." You are the assistant speaking.
+Do not introduce yourself in normal answers. For normal questions,
+answer the question directly without starting with "I am W.A.Y.N.E."
 
 You are a calm, intelligent, and highly capable personal AI assistant
 running entirely on local hardware. You control the user's
@@ -97,7 +117,8 @@ Rules:
 - Tag every response: [FILE SYSTEM] [CALENDAR] [TASK ENGINE]
   [DEVICE CONTROL] [NETWORK] [AI RESPONSE] [OFFLINE]
 - For shutdown/restart/sleep commands: always confirm first
-- Voice responses: under 3 sentences, no markdown, speak naturally
+- Voice responses: under 3 sentences, no markdown, speak naturally.
+  In voice text, write your name as "Wayne" instead of "W.A.Y.N.E."
 - Keep responses sharp and actionable
 - Always speak as W.A.Y.N.E in first person. Do not describe yourself
   as a web dashboard, website, homepage, or external service.
@@ -139,7 +160,9 @@ def build_adaptive_system_prompt(db: Session) -> str:
         "prose": "Write in natural prose paragraphs, no bullet points.",
     }.get(fmt, "Write in natural prose.")
 
-    return f"""{SYSTEM_PROMPT}
+    return f"""{get_datetime_context()}
+
+{SYSTEM_PROMPT}
 
 LEARNED USER PREFERENCES:
 - {length_instruction}
@@ -248,7 +271,7 @@ async def call_ollama(messages: list[dict[str, str]], stream: bool = False) -> d
         detail = exc.response.text.strip()
         raise OllamaUnavailable(f"W.A.Y.N.E AI core offline. Ollama error: {detail}") from exc
     except httpx.HTTPError as exc:
-        raise OllamaUnavailable("W.A.Y.N.E AI core offline. Please start the local engine.") from exc
+        raise OllamaUnavailable(f"W.A.Y.N.E AI core offline. Ollama request failed: {type(exc).__name__}: {exc}") from exc
 
 
 async def stream_ollama(messages: list[dict[str, str]]) -> AsyncGenerator[str, None]:
@@ -283,6 +306,26 @@ async def stream_ollama(messages: list[dict[str, str]]) -> AsyncGenerator[str, N
 
 
 async def execute_tool(tool_name: str, args: dict[str, Any], db: Session) -> Any:
+    if tool_name == "get_datetime":
+        timezone_name = args.get("timezone") or args.get("timezone_name") or "auto"
+        return datetime_tool.get_current(timezone_name)
+    if tool_name == "get_special_days":
+        query_type = args.get("query_type", "today")
+        country = args.get("country", "IN")
+        if query_type == "upcoming":
+            return special_days_engine.get_upcoming(int(args.get("days_ahead", 30)), country)
+        if query_type == "specific":
+            return special_days_engine.get_day_info(args.get("date", datetime_tool.get_current()["date"]), country)
+        return special_days_engine.get_today_specials(country)
+    if tool_name == "general_knowledge":
+        return await knowledge_tool.answer(args.get("query", ""), args.get("source", "auto"))
+    if tool_name == "web_search":
+        return await web_search.search(args.get("query", ""), int(args.get("max_results", 5)))
+    if tool_name == "wikipedia":
+        query = args.get("query", "")
+        if args.get("get_sections"):
+            return await wikipedia.get_sections(query)
+        return await wikipedia.get_summary(query)
     if tool_name == "open_file":
         if not args.get("path"):
             return {"error": "Missing path. Ask the user which file to open."}
@@ -418,6 +461,46 @@ def _ensure_wayne_response(content: str) -> str:
     return cleaned
 
 
+def _clean_redundant_intro(content: str, user_message: str) -> str:
+    if identity_response(user_message):
+        return content
+    tag = ""
+    body = content.strip()
+    tag_match = re.match(r"^(\[[A-Z ]+\])\s*(.*)$", body, flags=re.DOTALL)
+    if tag_match:
+        tag = f"{tag_match.group(1)} "
+        body = tag_match.group(2).strip()
+    patterns = [
+        r"^(?:I\s+am|I'm)\s+W\.?A\.?Y\.?N\.?E\.?\s*(?:—|-|,|:)?\s*",
+        r"^W\.?A\.?Y\.?N\.?E\.?\s+(?:here|online|ready)\s*(?:—|-|,|:)?\s*",
+    ]
+    for pattern in patterns:
+        body = re.sub(pattern, "", body, flags=re.IGNORECASE).strip()
+    body = re.sub(r"\bas\s+W\.?A\.?Y\.?N\.?E\.?,?\s*", "", body, flags=re.IGNORECASE).strip()
+    body = body or "Standing by, Sir."
+    return f"{tag}{body}".strip()
+
+
+def _voice_speech_text(content: str) -> str:
+    return content.replace("W.A.Y.N.E.", "Wayne").replace("W.A.Y.N.E", "Wayne")
+
+
+def _language_for_message(user_message: str) -> tuple[str, str]:
+    match = re.search(r"\[LANG:([a-zA-Z-]+)\]", user_message or "")
+    if match:
+        code = match.group(1).lower()
+    else:
+        cleaned = re.sub(r"\[(?:VOICE|LANG:[^\]]+)\]", "", user_message or "").strip()
+        code = language_engine.detect_language(cleaned)
+    if code not in SUPPORTED_LANGUAGES or code == "auto":
+        code = "en"
+    return code, SUPPORTED_LANGUAGES.get(code, SUPPORTED_LANGUAGES["en"])["name"]
+
+
+def _clean_user_language_markers(user_message: str) -> str:
+    return re.sub(r"\[(?:VOICE|LANG:[^\]]+)\]\s*", "", user_message or "").strip()
+
+
 def identity_response(user_message: str) -> str | None:
     normalized = " ".join((user_message or "").lower().replace("?", " ").split())
     if not normalized:
@@ -431,6 +514,68 @@ def identity_response(user_message: str) -> str | None:
     return None
 
 
+def direct_factual_response(user_message: str) -> str | None:
+    normalized = " ".join((user_message or "").lower().replace("?", " ").split())
+    if not normalized:
+        return None
+    if ("tallest man" in normalized or "longest man" in normalized) and "world" in normalized:
+        if "living" in normalized or "alive" in normalized:
+            return "[AI RESPONSE] The tallest living man is Sultan Kösen of Turkey, measured by Guinness World Records at 8 feet 1 inch."
+        return "[AI RESPONSE] The tallest man ever recorded was Robert Wadlow, at 8 feet 11.1 inches. The tallest living man is Sultan Kösen, at 8 feet 1 inch."
+    return None
+
+
+def _is_knowledge_query(user_message: str) -> bool:
+    normalized = " ".join((user_message or "").lower().replace("?", " ").split())
+    if not normalized:
+        return False
+    triggers = (
+        "what time",
+        "current time",
+        "today date",
+        "today's date",
+        "what date",
+        "what day",
+        "which day",
+        "holiday",
+        "special day",
+        "festival",
+        "who is",
+        "who was",
+        "what is",
+        "what was",
+        "where is",
+        "tell me about",
+        "explain",
+        "define",
+        "latest",
+        "current",
+        "news",
+        "search internet",
+        "search the internet",
+    )
+    return any(trigger in normalized for trigger in triggers)
+
+
+async def direct_knowledge_response(user_message: str) -> str | None:
+    if not _is_knowledge_query(user_message):
+        return None
+    query = _clean_user_language_markers(user_message)
+    result = await knowledge_tool.answer(query)
+    answer = result.get("answer")
+    if not answer:
+        return None
+    source = result.get("source", "knowledge")
+    label = {
+        "system_clock": "system clock",
+        "special_days_db": "special days database",
+        "wikipedia": "Wikipedia",
+        "web_search": "current web results",
+    }.get(source, source)
+    suffix = f" Source: {label}."
+    return _ensure_wayne_response(f"{answer}{suffix}")
+
+
 async def chat_with_ollama(
     messages: list[dict[str, Any]],
     query: str | None,
@@ -441,6 +586,7 @@ async def chat_with_ollama(
     started = time.perf_counter()
     conversation = normalize_messages(messages, query)
     user_message = query or (conversation[-1]["content"] if conversation else "")
+    detected_language, language_name = _language_for_message(user_message)
     state = await agent.observe(user_message=user_message, session_id=session_id)
     action_context = await agent.act(state, user_message, session_id)
     intent = state.get("intent") or detect_intent(user_message)
@@ -464,15 +610,60 @@ async def chat_with_ollama(
             "response_time_ms": response_time_ms,
             "messages": conversation + [{"role": "assistant", "content": direct_identity}],
         }
-    if not await check_ollama():
-        raise OllamaUnavailable("W.A.Y.N.E AI core offline. Please start the local engine.")
+    direct_fact = direct_factual_response(user_message)
+    if direct_fact:
+        if "[VOICE]" in user_message:
+            direct_fact = _voice_speech_text(direct_fact)
+        response_time_ms = int((time.perf_counter() - started) * 1000)
+        interaction_id = await agent.log_interaction(
+            session_id=session_id,
+            user_message=user_message,
+            wayne_response=direct_fact,
+            state=state,
+            action="direct_factual_response",
+            response_time_ms=response_time_ms,
+        )
+        return {
+            "reply": direct_fact,
+            "tool_used": None,
+            "interaction_id": interaction_id,
+            "intent": intent,
+            "emotion": state.get("emotion"),
+            "response_time_ms": response_time_ms,
+            "messages": conversation + [{"role": "assistant", "content": direct_fact}],
+        }
+    direct_knowledge = await direct_knowledge_response(user_message)
+    if direct_knowledge:
+        if "[VOICE]" in user_message:
+            direct_knowledge = _voice_speech_text(direct_knowledge)
+        response_time_ms = int((time.perf_counter() - started) * 1000)
+        interaction_id = await agent.log_interaction(
+            session_id=session_id,
+            user_message=user_message,
+            wayne_response=direct_knowledge,
+            state=state,
+            action="direct_knowledge_response",
+            response_time_ms=response_time_ms,
+        )
+        return {
+            "reply": direct_knowledge,
+            "tool_used": "general_knowledge",
+            "interaction_id": interaction_id,
+            "intent": intent,
+            "emotion": state.get("emotion"),
+            "response_time_ms": response_time_ms,
+            "messages": conversation + [{"role": "assistant", "content": direct_knowledge}],
+        }
     few_shot: list[dict[str, str]] = []
     for example in action_context["few_shot_examples"]:
         few_shot.append({"role": "user", "content": example["user_message"]})
         few_shot.append({"role": "assistant", "content": example["wayne_response"]})
     if not few_shot:
         few_shot = build_few_shot_context(db, user_message, intent)
-    system_prompt = f"{action_context['system_prompt']}\n\n{TOOL_PROMPT}"
+    language_instruction = ""
+    if detected_language != "en":
+        language_instruction = f"\n\nLANGUAGE: The user is speaking {language_name}. Respond only in {language_name}. Do not mix languages."
+    system_prompt = f"{action_context['system_prompt']}{language_instruction}\n\n{TOOL_PROMPT}"
     full_messages = [{"role": "system", "content": system_prompt}] + few_shot + conversation
     response = await call_ollama(full_messages, stream=False)
     content = response.get("message", {}).get("content", "").strip()
@@ -494,7 +685,9 @@ async def chat_with_ollama(
         response = await call_ollama(full_messages, stream=False)
         content = response.get("message", {}).get("content", "").strip()
 
-    content = _ensure_wayne_response(content)
+    content = _ensure_wayne_response(_clean_redundant_intro(content, user_message))
+    if "[VOICE]" in user_message:
+        content = _voice_speech_text(content)
     response_time_ms = int((time.perf_counter() - started) * 1000)
     interaction_id = await agent.log_interaction(
         session_id=session_id,
@@ -525,6 +718,7 @@ async def stream_chat_with_ollama(messages: list[dict[str, Any]], query: str | N
     started = time.perf_counter()
     conversation = normalize_messages(messages, query)
     user_message = query or (conversation[-1]["content"] if conversation else "")
+    detected_language, language_name = _language_for_message(user_message)
     state = await agent.observe(user_message=user_message, session_id=session_id)
     action_context = await agent.act(state, user_message, session_id)
     intent = state.get("intent") or detect_intent(user_message)
@@ -541,17 +735,55 @@ async def stream_chat_with_ollama(messages: list[dict[str, Any]], query: str | N
         for token in direct_identity:
             yield token
         return
-    if not await check_ollama():
-        raise OllamaUnavailable("W.A.Y.N.E AI core offline. Please start the local engine.")
+    direct_fact = direct_factual_response(user_message)
+    if direct_fact:
+        if "[VOICE]" in user_message:
+            direct_fact = _voice_speech_text(direct_fact)
+        await agent.log_interaction(
+            session_id=session_id,
+            user_message=user_message,
+            wayne_response=direct_fact,
+            state=state,
+            action="direct_factual_response",
+            response_time_ms=int((time.perf_counter() - started) * 1000),
+        )
+        for token in direct_fact:
+            yield token
+        return
+    direct_knowledge = await direct_knowledge_response(user_message)
+    if direct_knowledge:
+        if "[VOICE]" in user_message:
+            direct_knowledge = _voice_speech_text(direct_knowledge)
+        await agent.log_interaction(
+            session_id=session_id,
+            user_message=user_message,
+            wayne_response=direct_knowledge,
+            state=state,
+            action="direct_knowledge_response",
+            response_time_ms=int((time.perf_counter() - started) * 1000),
+        )
+        for token in direct_knowledge:
+            yield token
+        return
     few_shot: list[dict[str, str]] = []
     for example in action_context["few_shot_examples"]:
         few_shot.append({"role": "user", "content": example["user_message"]})
         few_shot.append({"role": "assistant", "content": example["wayne_response"]})
     if not few_shot:
         few_shot = build_few_shot_context(db, user_message, intent)
-    full_messages = [{"role": "system", "content": f"{action_context['system_prompt']}\n\n{TOOL_PROMPT}"}] + few_shot + conversation
-    response = await call_ollama(full_messages, stream=False)
-    content = response.get("message", {}).get("content", "").strip()
+    language_instruction = ""
+    if detected_language != "en":
+        language_instruction = f"\n\nLANGUAGE: The user is speaking {language_name}. Respond only in {language_name}. Do not mix languages."
+    full_messages = [{"role": "system", "content": f"{action_context['system_prompt']}{language_instruction}\n\n{TOOL_PROMPT}"}] + few_shot + conversation
+    first_response_text = ""
+    streaming_visible = True
+    async for token in stream_ollama(full_messages):
+        first_response_text += token
+        if first_response_text.lstrip().startswith("{"):
+            streaming_visible = False
+        if streaming_visible:
+            yield token
+    content = first_response_text.strip()
     tool_call = _extract_tool_call(content)
     if tool_call:
         result = await execute_tool(tool_call["tool"], tool_call.get("args", {}), db)
@@ -560,7 +792,9 @@ async def stream_chat_with_ollama(messages: list[dict[str, Any]], query: str | N
             {"role": "user", "content": f"Tool result: {json.dumps(result, default=str)}. Now respond naturally."},
         ]
     else:
-        content = _ensure_wayne_response(content)
+        content = _ensure_wayne_response(_clean_redundant_intro(content, user_message))
+        if "[VOICE]" in user_message:
+            content = _voice_speech_text(content)
         await agent.log_interaction(
             session_id=session_id,
             user_message=user_message,
@@ -569,15 +803,15 @@ async def stream_chat_with_ollama(messages: list[dict[str, Any]], query: str | N
             action=action_context["action"],
             response_time_ms=int((time.perf_counter() - started) * 1000),
         )
-        for token in content:
-            yield token
         return
 
     full_text = ""
     async for token in stream_ollama(full_messages):
         full_text += token
         yield token
-    full_text = _ensure_wayne_response(full_text)
+    full_text = _ensure_wayne_response(_clean_redundant_intro(full_text, user_message))
+    if "[VOICE]" in user_message:
+        full_text = _voice_speech_text(full_text)
     await agent.log_interaction(
         session_id=session_id,
         user_message=user_message,

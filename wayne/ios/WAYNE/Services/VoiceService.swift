@@ -1,6 +1,5 @@
 import AVFoundation
 import Foundation
-import Speech
 
 @MainActor
 final class VoiceService: NSObject, ObservableObject, AVSpeechSynthesizerDelegate {
@@ -10,15 +9,17 @@ final class VoiceService: NSObject, ObservableObject, AVSpeechSynthesizerDelegat
     @Published var liveTranscript = ""
     @Published var aiResponse = ""
     @Published var interruptDetected = false
+    @Published var detectedLanguage = "auto"
+    @Published var confidence: Double = 0
 
     private var audioEngine = AVAudioEngine()
-    private var speechRecognizer = SFSpeechRecognizer(locale: Locale(identifier: "en-US"))
-    private var recognitionRequest: SFSpeechAudioBufferRecognitionRequest?
-    private var recognitionTask: SFSpeechRecognitionTask?
     private var synthesizer = AVSpeechSynthesizer()
     private var webSocketTask: URLSessionWebSocketTask?
     private var interruptionThreshold: Float = 0.02
     private var consecutiveInterruptFrames = 0
+    private var hasSpeech = false
+    private var silenceFrames = 0
+    private var lastSpeechEnd = Date.distantPast
     private var ttsBuffer = ""
     private let sessionId = UUID().uuidString
 
@@ -28,15 +29,12 @@ final class VoiceService: NSObject, ObservableObject, AVSpeechSynthesizerDelegat
     }
 
     func startDuplexSession() {
-        SFSpeechRecognizer.requestAuthorization { _ in }
         AVAudioSession.sharedInstance().requestRecordPermission { _ in }
         liveTranscript = ""
         aiResponse = ""
         interruptDetected = false
-        speak(text: "W.A.Y.N.E online. How can I assist you?")
         connectWebSocket()
         startAudioCapture()
-        startLiveRecognition()
         isListening = true
     }
 
@@ -46,8 +44,6 @@ final class VoiceService: NSObject, ObservableObject, AVSpeechSynthesizerDelegat
         audioEngine.inputNode.removeTap(onBus: 0)
         synthesizer.stopSpeaking(at: .immediate)
         speak(text: "W.A.Y.N.E standing by.")
-        recognitionRequest?.endAudio()
-        recognitionTask?.cancel()
         webSocketTask?.cancel(with: .normalClosure, reason: nil)
         isListening = false
         isSpeaking = false
@@ -89,14 +85,21 @@ final class VoiceService: NSObject, ObservableObject, AVSpeechSynthesizerDelegat
         switch type {
         case "ready":
             isListening = true
-            aiResponse = "W.A.Y.N.E online. How can I assist you?"
+            aiResponse = message["message"] as? String ?? "W.A.Y.N.E voice ready."
         case "transcribing":
             isThinking = true
             isListening = false
         case "transcript":
             liveTranscript = message["text"] as? String ?? liveTranscript
+            detectedLanguage = message["language"] as? String ?? detectedLanguage
+            confidence = message["confidence"] as? Double ?? confidence
             isThinking = true
             isListening = false
+        case "low_confidence":
+            aiResponse = message["message"] as? String ?? "Please repeat that once."
+            confidence = message["confidence"] as? Double ?? confidence
+            isThinking = false
+            isListening = true
         case "ai_token":
             let token = message["token"] as? String ?? ""
             aiResponse += token
@@ -124,8 +127,8 @@ final class VoiceService: NSObject, ObservableObject, AVSpeechSynthesizerDelegat
         input.installTap(onBus: 0, bufferSize: 1024, format: format) { [weak self] buffer, _ in
             Task { @MainActor in
                 guard let self else { return }
-                self.recognitionRequest?.append(buffer)
                 self.monitorInterruption(buffer: buffer)
+                self.monitorSpeechEnd(buffer: buffer)
                 if let pcm = self.pcmData(from: buffer) {
                     self.sendJSON(["type": "audio_chunk", "data": pcm.base64EncodedString()])
                 }
@@ -133,19 +136,6 @@ final class VoiceService: NSObject, ObservableObject, AVSpeechSynthesizerDelegat
         }
         audioEngine.prepare()
         try? audioEngine.start()
-    }
-
-    private func startLiveRecognition() {
-        recognitionRequest = SFSpeechAudioBufferRecognitionRequest()
-        recognitionRequest?.shouldReportPartialResults = true
-        guard let request = recognitionRequest else { return }
-        recognitionTask = speechRecognizer?.recognitionTask(with: request) { [weak self] result, _ in
-            Task { @MainActor in
-                guard let self, let result else { return }
-                self.liveTranscript = result.bestTranscription.formattedString
-                if result.isFinal { self.sendJSON(["type": "speech_end"]) }
-            }
-        }
     }
 
     private func pcmData(from buffer: AVAudioPCMBuffer) -> Data? {
@@ -177,6 +167,29 @@ final class VoiceService: NSObject, ObservableObject, AVSpeechSynthesizerDelegat
         }
     }
 
+    private func monitorSpeechEnd(buffer: AVAudioPCMBuffer) {
+        guard !isSpeaking, let channel = buffer.floatChannelData?[0] else { return }
+        let count = Int(buffer.frameLength)
+        guard count > 0 else { return }
+        var sum: Float = 0
+        for index in 0..<count { sum += channel[index] * channel[index] }
+        let rms = sqrt(sum / Float(count))
+        if rms > 0.018 {
+            hasSpeech = true
+            silenceFrames = 0
+        } else if hasSpeech {
+            silenceFrames += 1
+        }
+        if hasSpeech && silenceFrames >= 10 && Date().timeIntervalSince(lastSpeechEnd) > 1.4 {
+            hasSpeech = false
+            silenceFrames = 0
+            lastSpeechEnd = Date()
+            isThinking = true
+            isListening = false
+            sendJSON(["type": "speech_end"])
+        }
+    }
+
     func speakIncremental(token: String) {
         ttsBuffer += token
         let words = ttsBuffer.split(separator: " ").count
@@ -195,13 +208,38 @@ final class VoiceService: NSObject, ObservableObject, AVSpeechSynthesizerDelegat
 
     private func speak(text: String) {
         let utterance = AVSpeechUtterance(string: text)
-        utterance.voice = AVSpeechSynthesisVoice(identifier: "com.apple.ttsbundle.Samantha-compact") ?? AVSpeechSynthesisVoice(language: "en-US")
+        utterance.voice = AVSpeechSynthesisVoice(language: ttsLanguage(for: detectedLanguage))
         utterance.rate = 0.52
         utterance.pitchMultiplier = 0.9
         synthesizer.speak(utterance)
         isSpeaking = true
         isListening = false
         isThinking = false
+    }
+
+    func setLanguage(_ language: String) {
+        detectedLanguage = language
+        sendJSON(["type": "set_language", "language": language])
+    }
+
+    private func ttsLanguage(for code: String) -> String {
+        switch code {
+        case "ta": return "ta-IN"
+        case "hi": return "hi-IN"
+        case "te": return "te-IN"
+        case "kn": return "kn-IN"
+        case "ml": return "ml-IN"
+        case "fr": return "fr-FR"
+        case "es": return "es-ES"
+        case "de": return "de-DE"
+        case "ja": return "ja-JP"
+        case "zh": return "zh-CN"
+        case "ar": return "ar-SA"
+        case "pt": return "pt-BR"
+        case "ru": return "ru-RU"
+        case "ko": return "ko-KR"
+        default: return "en-US"
+        }
     }
 
     func interrupt() {

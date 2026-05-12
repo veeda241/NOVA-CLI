@@ -47,6 +47,7 @@ class Base(DeclarativeBase):
 
 def init_db() -> None:
     from models import (  # noqa: F401
+        ConnectionLog,
         ConversationHistory,
         DeviceCommandLog,
         DeviceStatus,
@@ -61,6 +62,8 @@ def init_db() -> None:
         KnownContact,
         LanguagePattern,
         PCOperationLog,
+        ResponseCache,
+        SpeedMetric,
         StartupProgram,
         Task,
         TopicTracker,
@@ -132,6 +135,54 @@ def ensure_schema() -> None:
             for column, ddl in columns.items():
                 if column not in existing:
                     connection.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}"))
+
+        if is_postgres:
+            realtime_tables = ("connection_log",)
+            secured_tables = ("connection_log", "response_cache", "speed_metrics")
+            for table in secured_tables:
+                if table in tables:
+                    connection.execute(text(f"ALTER TABLE {table} ENABLE ROW LEVEL SECURITY"))
+                    connection.execute(
+                        text(
+                            """
+                            DO $$
+                            BEGIN
+                                IF NOT EXISTS (
+                                    SELECT 1 FROM pg_policies
+                                    WHERE schemaname = 'public'
+                                      AND tablename = :table_name
+                                      AND policyname = 'full_access'
+                                ) THEN
+                                    EXECUTE format('CREATE POLICY full_access ON public.%I FOR ALL USING (true)', :table_name);
+                                END IF;
+                            END $$;
+                            """
+                        ),
+                        {"table_name": table},
+                    )
+            for table in realtime_tables:
+                if table in tables:
+                    connection.execute(
+                        text(
+                            """
+                            DO $$
+                            BEGIN
+                                IF EXISTS (
+                                    SELECT 1 FROM pg_publication
+                                    WHERE pubname = 'supabase_realtime'
+                                ) AND NOT EXISTS (
+                                    SELECT 1 FROM pg_publication_tables
+                                    WHERE pubname = 'supabase_realtime'
+                                      AND schemaname = 'public'
+                                      AND tablename = :table_name
+                                ) THEN
+                                    EXECUTE format('ALTER PUBLICATION supabase_realtime ADD TABLE public.%I', :table_name);
+                                END IF;
+                            END $$;
+                            """
+                        ),
+                        {"table_name": table},
+                    )
 
 
 def get_db() -> Generator[Session, None, None]:

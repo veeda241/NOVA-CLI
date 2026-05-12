@@ -8,17 +8,8 @@ from pathlib import Path
 import numpy as np
 import soundfile as sf
 import webrtcvad
-import whisper
 
-
-_WHISPER_MODEL = None
-
-
-def _model():
-    global _WHISPER_MODEL
-    if _WHISPER_MODEL is None:
-        _WHISPER_MODEL = whisper.load_model("base")
-    return _WHISPER_MODEL
+from core.language_engine import language_engine
 
 
 class VoiceSession:
@@ -33,10 +24,13 @@ class VoiceSession:
         self.frame_ms = 30
         self.silence_ms = 0
         self.has_speech = False
+        self.language = language_engine.current_language
         self._lock = asyncio.Lock()
 
     def process_audio_chunk(self, chunk: bytes) -> bool:
         self.audio_buffer += chunk
+        if self._looks_like_encoded(chunk):
+            return False
         frame_size = int(self.sample_rate * self.frame_ms / 1000) * 2
         if len(chunk) < frame_size:
             return False
@@ -61,7 +55,7 @@ class VoiceSession:
             self.silence_ms += self.frame_ms
         return self.has_speech and self.silence_ms >= 800
 
-    async def transcribe(self) -> str:
+    async def transcribe(self) -> dict:
         async with self._lock:
             audio = self.audio_buffer
             self.audio_buffer = b""
@@ -69,11 +63,11 @@ class VoiceSession:
             self.has_speech = False
 
         if not audio:
-            return ""
+            return {"text": "", "language": self.language, "confidence": 0.0}
 
         return await asyncio.to_thread(self._transcribe_sync, audio)
 
-    def _transcribe_sync(self, audio: bytes) -> str:
+    def _transcribe_sync(self, audio: bytes) -> dict:
         temp_path: str | None = None
         try:
             with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as handle:
@@ -85,16 +79,20 @@ class VoiceSession:
             else:
                 Path(temp_path).write_bytes(audio)
 
-            result = _model().transcribe(temp_path, fp16=False)
-            return str(result.get("text", "")).strip()
+            result = language_engine.transcribe(temp_path, language=None if language_engine.auto_detect else self.language)
+            self.language = result.get("language", self.language)
+            return result
         finally:
             if temp_path:
                 Path(temp_path).unlink(missing_ok=True)
 
     def _looks_like_pcm(self, audio: bytes) -> bool:
-        if audio.startswith(b"RIFF") or audio.startswith(b"\x1aE\xdf\xa3") or audio.startswith(b"OggS"):
+        if self._looks_like_encoded(audio):
             return False
         return len(audio) % 2 == 0
+
+    def _looks_like_encoded(self, audio: bytes) -> bool:
+        return audio.startswith(b"RIFF") or audio.startswith(b"\x1aE\xdf\xa3") or audio.startswith(b"OggS") or audio.startswith(b"ID3")
 
     def cancel_stream(self) -> None:
         if self.current_stream is not None and not self.current_stream.done():

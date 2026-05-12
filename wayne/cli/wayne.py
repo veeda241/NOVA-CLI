@@ -3,6 +3,8 @@ from __future__ import annotations
 import os
 import sys
 import time
+import json
+from pathlib import Path
 from typing import Any
 
 import requests
@@ -30,6 +32,7 @@ BACKEND_URL = os.getenv("WAYNE_BACKEND_URL", "http://localhost:8000")
 SESSION_ID = os.getenv("WAYNE_SESSION_ID", "cli")
 console = Console()
 history: list[dict[str, str]] = []
+QUEUE_PATH = Path.home() / ".wayne" / "queue.json"
 
 
 def api(method: str, path: str, **kwargs: Any) -> Any:
@@ -40,10 +43,17 @@ def api(method: str, path: str, **kwargs: Any) -> Any:
 
 def backend_online() -> bool:
     try:
-        api("GET", "/system/status")
+        api("GET", "/health")
         return True
     except requests.RequestException:
         return False
+
+
+def health_status() -> dict[str, Any]:
+    try:
+        return api("GET", "/health")
+    except requests.RequestException:
+        return {"status": "offline"}
 
 
 def approx_tokens(text: str) -> int:
@@ -53,17 +63,67 @@ def approx_tokens(text: str) -> int:
 def send_chat(text: str) -> None:
     started = time.perf_counter()
     try:
-        result = api("POST", "/chat", json={"messages": history, "query": text, "session_id": SESSION_ID})
-        reply = result.get("reply", "")
+        response = requests.post(
+            f"{BACKEND_URL}/chat",
+            json={"messages": history, "query": text, "session_id": SESSION_ID, "stream": True},
+            timeout=120,
+            stream=True,
+        )
+        response.raise_for_status()
+        reply = ""
+        interaction_id = None
+        if "text/event-stream" in response.headers.get("content-type", ""):
+            rich_console.print("[cyan]W.A.Y.N.E[/cyan]: ", end="")
+            for raw_line in response.iter_lines(decode_unicode=True):
+                if not raw_line or not raw_line.startswith("data: "):
+                    continue
+                event = json.loads(raw_line[6:])
+                if event.get("type") == "token":
+                    token = event.get("token", "")
+                    reply += token
+                    rich_console.print(token, end="")
+                elif event.get("type") == "done":
+                    interaction_id = event.get("interaction_id")
+            rich_console.print()
+        else:
+            result = response.json()
+            reply = result.get("reply", "")
+            interaction_id = result.get("interaction_id")
+            show_ai_response(reply)
         history.append({"role": "user", "content": text})
         history.append({"role": "assistant", "content": reply})
-        show_ai_response(reply)
         show_meta(approx_tokens(text + reply), time.perf_counter() - started)
-        interaction_id = result.get("interaction_id")
         if interaction_id:
             show_feedback_prompt(interaction_id)
     except requests.RequestException as exc:
+        queue_command(text)
         show_error(f"Backend unavailable: {exc}")
+        rich_console.print("[amber][Queued][/amber] Command saved and will send after reconnect.")
+
+
+def queue_command(text: str) -> None:
+    QUEUE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        queued = json.loads(QUEUE_PATH.read_text(encoding="utf-8")) if QUEUE_PATH.exists() else []
+    except Exception:
+        queued = []
+    queued.append({"text": text, "timestamp": time.time()})
+    QUEUE_PATH.write_text(json.dumps(queued, indent=2), encoding="utf-8")
+
+
+def flush_queue() -> None:
+    if not QUEUE_PATH.exists() or not backend_online():
+        return
+    try:
+        queued = json.loads(QUEUE_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        queued = []
+    if not queued:
+        return
+    QUEUE_PATH.write_text("[]", encoding="utf-8")
+    rich_console.print(f"[green]Flushing {len(queued)} queued command(s).[/green]")
+    for item in queued:
+        send_chat(item.get("text", ""))
 
 
 def show_feedback_prompt(interaction_id: int) -> None:
@@ -300,6 +360,7 @@ def main() -> int:
             return 0
         if not text:
             continue
+        flush_queue()
         if text.lower() in {"sleep wayne", "goodbye wayne", "standby wayne", "goodnight wayne"}:
             enter_passive_mode()
             return 0

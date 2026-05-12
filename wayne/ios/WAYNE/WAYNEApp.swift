@@ -5,12 +5,13 @@ import UserNotifications
 struct WAYNEApp: App {
     @UIApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
     @StateObject private var wakeWordService = WakeWordService()
+    @StateObject private var connectionService = ConnectionService()
     @State private var showBootScreen = false
 
     var body: some Scene {
         WindowGroup {
             ZStack {
-                ContentView()
+                ContentView(connection: connectionService)
                     .preferredColorScheme(.dark)
                 if showBootScreen {
                     BootScreenView(isShowing: $showBootScreen)

@@ -199,6 +199,30 @@ class LanguagePattern(Base):
     last_seen: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, nullable=False)
 
 
+class VoiceTranscription(Base):
+    __tablename__ = "voice_transcriptions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    session_id: Mapped[str] = mapped_column(String(120), index=True, nullable=False)
+    original_text: Mapped[str] = mapped_column(Text, nullable=False)
+    corrected_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    detected_language: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    confidence: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
+    was_translated: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    user_corrected: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    timestamp: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, nullable=False)
+
+
+class LanguagePreference(Base):
+    __tablename__ = "language_preferences"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    language_code: Mapped[str] = mapped_column(String(20), index=True, nullable=False)
+    language_name: Mapped[str] = mapped_column(String(120), nullable=False)
+    use_count: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    last_used: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, nullable=False)
+
+
 class KnownContact(Base):
     __tablename__ = "known_contacts"
 
@@ -286,3 +310,37 @@ class StartupProgram(Base):
     category: Mapped[str] = mapped_column(String(80), default="unknown", nullable=False)
     impact: Mapped[str] = mapped_column(String(40), default="medium", nullable=False)
     last_modified: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, nullable=False)
+
+
+class ConnectionLog(Base):
+    __tablename__ = "connection_log"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    channel: Mapped[str] = mapped_column(String(80), nullable=False)
+    identifier: Mapped[str] = mapped_column(String(160), nullable=False)
+    event: Mapped[str] = mapped_column(String(80), nullable=False)
+    timestamp: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, nullable=False)
+
+
+class ResponseCache(Base):
+    __tablename__ = "response_cache"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    cache_key: Mapped[str] = mapped_column(String(64), unique=True, index=True, nullable=False)
+    user_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    response: Mapped[str] = mapped_column(Text, nullable=False)
+    hit_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, nullable=False)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+class SpeedMetric(Base):
+    __tablename__ = "speed_metrics"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    session_id: Mapped[str | None] = mapped_column(String(120), index=True, nullable=True)
+    first_token_ms: Mapped[float | None] = mapped_column(Float, nullable=True)
+    total_response_ms: Mapped[float | None] = mapped_column(Float, nullable=True)
+    tokens_per_second: Mapped[float | None] = mapped_column(Float, nullable=True)
+    cache_hit: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    timestamp: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, nullable=False)

@@ -71,12 +71,12 @@ export function InputBar({ onSend, loading }: { onSend: (text: string) => void; 
           }}
         />
       )}
-      <form onSubmit={submit} className="wayne-border flex items-center gap-2 bg-surface p-3">
-        <button type="button" onClick={() => setLiveVoice(true)} className="wayne-border relative bg-panel p-3 text-cyan shadow-[0_0_18px_rgba(0,212,255,0.25)]" title="Live voice">
+      <form onSubmit={submit} className="wayne-border flex h-[88px] shrink-0 items-center gap-2 bg-surface p-3">
+        <button type="button" onClick={() => setLiveVoice(true)} className="wayne-border relative h-14 w-14 bg-panel text-cyan shadow-[0_0_18px_rgba(0,212,255,0.25)]" title="Live voice">
           <Mic size={18} />
           <span className="absolute -right-2 -top-2 rounded-full bg-cyan px-1.5 py-0.5 text-[9px] text-background">Live</span>
         </button>
-        <button type="button" onClick={startVoice} className={`wayne-border p-3 ${recording ? "animate-pulseMic bg-danger/20 text-danger" : "bg-panel text-cyan/70"}`} title="One-shot voice input">
+        <button type="button" onClick={startVoice} className={`wayne-border h-14 w-14 ${recording ? "animate-pulseMic bg-danger/20 text-danger" : "bg-panel text-cyan/70"}`} title="One-shot voice input">
           <Mic size={18} />
         </button>
         <input
@@ -84,9 +84,9 @@ export function InputBar({ onSend, loading }: { onSend: (text: string) => void; 
           onChange={(event) => setValue(event.target.value)}
           disabled={loading}
           placeholder="Issue a command..."
-          className="wayne-border min-w-0 flex-1 bg-background px-4 py-3 text-sm text-white outline-none focus:border-cyan"
+          className="wayne-border h-14 min-w-0 flex-1 bg-background px-4 text-sm text-white outline-none focus:border-cyan"
         />
-        <button disabled={loading} className="wayne-border bg-cyan/10 p-3 text-cyan disabled:opacity-50" title="Send">
+        <button disabled={loading} className="wayne-border h-14 w-14 bg-cyan/10 text-cyan disabled:opacity-50" title="Send">
           {loading ? <Loader2 size={18} className="animate-spin" /> : <SendHorizontal size={18} />}
         </button>
       </form>

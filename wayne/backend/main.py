@@ -2,29 +2,39 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import json
+import os
+import shutil
+import subprocess
+import sys
+import time
 import uuid
 from datetime import datetime
 from typing import Any
 
 from fastapi import Depends, FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import RedirectResponse
+from fastapi.responses import RedirectResponse, StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from core.brain import (
     OllamaUnavailable,
+    check_ollama,
     chat_with_ollama,
     current_model,
     list_ollama_models,
     select_model,
     stream_chat_with_ollama,
 )
+from core.connection_manager import connection_manager
 from core.memory import add_message, get_history
-from core.offline import check_ollama, offline_reply
+from core.language_engine import SUPPORTED_LANGUAGES, language_engine
+from core.offline import offline_reply
 from core.rl.agent import agent
 from core.rl_engine import rl_engine
+from core.speed_engine import speed_engine
 from core.voice_session import VoiceSession
 from database import DATABASE_URL, SessionLocal, engine, get_db, init_db
 from models import (
@@ -36,9 +46,11 @@ from models import (
     Interaction,
     KnownContact,
     LanguagePattern,
+    SpeedMetric,
     TopicTracker,
     UserPreference,
     UserState,
+    VoiceTranscription,
     WakeEvent,
 )
 from tools.calendar_tool import authorization_url, handle_callback, today_events
@@ -54,9 +66,15 @@ from tools.file_engine import file_engine
 from tools.file_indexer import file_indexer
 from tools.file_tool import list_files, open_file
 from tools.file_watcher import file_watcher
+from tools.datetime_tool import datetime_tool
+from tools.knowledge_tool import knowledge_tool
 from tools.pc_manager import pc_manager
+from tools.special_days import special_days_engine
 from tools.system_tool import system_status
 from tools.task_tool import create_task, delete_task, list_tasks, toggle_task
+from tools.translation_tool import translation_tool
+from tools.web_search_tool import web_search
+from tools.wikipedia_tool import wikipedia
 
 app = FastAPI(title="W.A.Y.N.E Shared Backend", version="2.0.0")
 
@@ -70,6 +88,47 @@ app.add_middleware(
 
 wake_event_sockets: set[WebSocket] = set()
 pending_device_confirmations: dict[str, dict[str, str]] = {}
+last_supabase_ok = True
+
+
+async def _ensure_ollama_running() -> bool:
+    if await check_ollama():
+        return True
+
+    candidates = [
+        shutil.which("ollama"),
+        os.path.expandvars(r"%LOCALAPPDATA%\Programs\Ollama\ollama.exe"),
+    ]
+    ollama_path = next((path for path in candidates if path and os.path.exists(path)), None)
+    if not ollama_path:
+        print("[W.A.Y.N.E] Ollama not found. Install Ollama or add it to PATH.")
+        return False
+
+    try:
+        creationflags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
+        subprocess.Popen(
+            [ollama_path, "serve"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            creationflags=creationflags,
+        )
+    except Exception as exc:
+        print(f"[W.A.Y.N.E] Failed to start Ollama: {exc}")
+        return False
+
+    for _ in range(10):
+        await asyncio.sleep(1)
+        if await check_ollama():
+            print("[W.A.Y.N.E] Ollama started automatically.")
+            return True
+
+    print("[W.A.Y.N.E] Ollama start timed out; offline fallback remains available.")
+    return False
+
+
+async def _warm_ai_engine() -> None:
+    await _ensure_ollama_running()
+    await speed_engine.warm_model()
 
 
 def _serialize_wake_event(event: WakeEvent) -> dict[str, Any]:
@@ -126,8 +185,17 @@ async def _record_wake_event(db: Session, source: str, event_type: str, session_
 
 
 @app.on_event("startup")
-def startup() -> None:
+async def startup() -> None:
     init_db()
+    asyncio.create_task(connection_manager.heartbeat_loop())
+    asyncio.create_task(_warm_ai_engine())
+    asyncio.create_task(speed_engine.keep_model_alive())
+    if not file_indexer.is_running:
+        if os.getenv("WAYNE_FULL_INDEX_ON_STARTUP", "0") == "1":
+            file_indexer.start_background_index()
+        else:
+            file_indexer.start_background_index([os.getenv("BASE_FILE_DIRECTORY", os.getcwd())])
+    print("[W.A.Y.N.E] All systems initializing...")
 
 
 @app.get("/")
@@ -148,6 +216,7 @@ class ChatRequest(BaseModel):
     query: str
     session_id: str = "default"
     prev_interaction_id: int | None = None
+    stream: bool = False
 
 
 class TaskCreate(BaseModel):
@@ -273,8 +342,93 @@ class VoiceFeedbackRequest(BaseModel):
     transcript: str
 
 
+class KnowledgeRequest(BaseModel):
+    query: str
+    source: str = "auto"
+
+
+class SearchRequest(BaseModel):
+    query: str
+    max_results: int = 5
+
+
+class WikipediaRequest(BaseModel):
+    query: str
+    get_sections: bool = False
+
+
+class VoiceLanguageRequest(BaseModel):
+    language: str = "auto"
+
+
+class VoiceVocabularyRequest(BaseModel):
+    words: list[str] = Field(default_factory=list)
+
+
+class TranslateRequest(BaseModel):
+    text: str
+    target_language: str
+    source_language: str = "auto"
+
+
+def _sse(payload: dict[str, Any]) -> str:
+    return f"data: {json.dumps(payload, default=str)}\n\n"
+
+
+async def _cached_chat_stream(reply: str, interaction_id: int | None = None):
+    yield _sse({"type": "token", "token": reply})
+    yield _sse({"type": "done", "interaction_id": interaction_id, "cached": True})
+
+
+async def _ollama_chat_stream(payload: ChatRequest, messages: list[dict[str, Any]]):
+    started = time.perf_counter()
+    full_text = ""
+    first_token_ms: float | None = None
+    db = SessionLocal()
+    try:
+        try:
+            async for token in stream_chat_with_ollama(messages, payload.query, db, session_id=payload.session_id):
+                if first_token_ms is None:
+                    first_token_ms = (time.perf_counter() - started) * 1000
+                full_text += token
+                yield _sse({"type": "token", "token": token})
+            add_message(db, payload.session_id, "assistant", full_text)
+            latest = db.scalar(
+                select(Interaction)
+                .where(Interaction.session_id == payload.session_id)
+                .order_by(Interaction.id.desc())
+                .limit(1)
+            )
+            elapsed = (time.perf_counter() - started) * 1000
+            tokens = max(1, len(full_text.split()))
+            speed_engine.log_metric(payload.session_id, first_token_ms, elapsed, tokens / max(elapsed / 1000, 0.001), False)
+            cache_key = speed_engine.get_cache_key(messages + [{"role": "user", "content": payload.query}], "wayne-main")
+            speed_engine.set_cache(cache_key, full_text, payload.query)
+            await rl_engine.analyze_and_improve(db)
+            yield _sse({"type": "done", "interaction_id": latest.id if latest else None, "cached": False})
+        except OllamaUnavailable as exc:
+            result = offline_reply(payload.query, db, str(exc))
+            interaction_id = rl_engine.log_interaction(
+                db,
+                payload.session_id,
+                payload.query,
+                result["reply"],
+                intent="offline",
+                tool_used=result.get("tool_used"),
+                token_count=len(result["reply"].split()),
+                implicit_score=0.5,
+            )
+            add_message(db, payload.session_id, "assistant", result["reply"])
+            yield _sse({"type": "token", "token": result["reply"]})
+            yield _sse({"type": "done", "interaction_id": interaction_id, "offline": True})
+    except Exception as exc:
+        yield _sse({"type": "error", "message": f"W.A.Y.N.E stream failed: {exc}"})
+    finally:
+        db.close()
+
+
 @app.post("/chat")
-async def chat(payload: ChatRequest, db: Session = Depends(get_db)) -> dict[str, Any]:
+async def chat(payload: ChatRequest, db: Session = Depends(get_db)) -> Any:
     if payload.prev_interaction_id:
         previous = db.get(Interaction, payload.prev_interaction_id)
         if previous:
@@ -315,26 +469,54 @@ async def chat(payload: ChatRequest, db: Session = Depends(get_db)) -> dict[str,
 
     add_message(db, payload.session_id, "user", payload.query)
     messages = payload.messages or get_history(db, payload.session_id)
-
-    if not await check_ollama():
-        result = offline_reply(payload.query, db)
-    else:
-        try:
-            result = await chat_with_ollama(messages, payload.query, db, session_id=payload.session_id)
-        except OllamaUnavailable as exc:
-            result = offline_reply(payload.query, db, str(exc))
-            result["interaction_id"] = rl_engine.log_interaction(
-                db,
-                payload.session_id,
-                payload.query,
-                result["reply"],
-                intent="offline",
-                tool_used=result.get("tool_used"),
-                token_count=len(result["reply"].split()),
-                implicit_score=0.5,
+    cache_messages = messages + [{"role": "user", "content": payload.query}]
+    cache_key = speed_engine.get_cache_key(cache_messages, "wayne-main")
+    cached = await speed_engine.get_cached(cache_key)
+    if cached:
+        interaction_id = rl_engine.log_interaction(
+            db,
+            payload.session_id,
+            payload.query,
+            cached,
+            intent="cached",
+            tool_used="response_cache",
+            token_count=len(cached.split()),
+            implicit_score=0.5,
+        )
+        add_message(db, payload.session_id, "assistant", cached)
+        speed_engine.log_metric(payload.session_id, 0.0, 0.0, None, True)
+        if payload.stream:
+            return StreamingResponse(
+                _cached_chat_stream(cached, interaction_id),
+                media_type="text/event-stream",
+                headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no", "Connection": "keep-alive"},
             )
+        return {"reply": cached, "tool_used": "response_cache", "interaction_id": interaction_id, "cached": True, "response_time_ms": 0}
+
+    if payload.stream:
+        return StreamingResponse(
+            _ollama_chat_stream(payload, messages),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no", "Connection": "keep-alive"},
+        )
+
+    try:
+        result = await chat_with_ollama(messages, payload.query, db, session_id=payload.session_id)
+    except OllamaUnavailable as exc:
+        result = offline_reply(payload.query, db, str(exc))
+        result["interaction_id"] = rl_engine.log_interaction(
+            db,
+            payload.session_id,
+            payload.query,
+            result["reply"],
+            intent="offline",
+            tool_used=result.get("tool_used"),
+            token_count=len(result["reply"].split()),
+            implicit_score=0.5,
+        )
 
     add_message(db, payload.session_id, "assistant", result["reply"])
+    speed_engine.set_cache(cache_key, result["reply"], payload.query)
     await rl_engine.analyze_and_improve(db)
     return result
 
@@ -723,6 +905,81 @@ async def pc_registry_write(payload: PCRegistryWriteRequest) -> dict[str, Any]:
     return await pc_manager.write_registry(payload.key_path, payload.value_name, payload.value_data, payload.value_type, payload.confirmed)
 
 
+@app.get("/datetime")
+async def datetime_current(timezone: str = Query("auto")) -> dict[str, Any]:
+    return datetime_tool.get_current(timezone)
+
+
+@app.get("/datetime/timezone")
+async def datetime_timezone(tz: str = Query("Asia/Kolkata")) -> dict[str, Any]:
+    return datetime_tool.get_time_in_timezone(tz)
+
+
+@app.get("/special-days/today")
+async def special_days_today(country: str = Query("IN")) -> dict[str, Any]:
+    return special_days_engine.get_today_specials(country)
+
+
+@app.get("/special-days/upcoming")
+async def special_days_upcoming(days: int = Query(30, ge=1, le=366), country: str = Query("IN")) -> list[dict[str, Any]]:
+    return special_days_engine.get_upcoming(days, country)
+
+
+@app.get("/special-days/date")
+async def special_days_date(date: str = Query(...), country: str = Query("IN")) -> dict[str, Any]:
+    return special_days_engine.get_day_info(date, country)
+
+
+@app.post("/knowledge")
+async def knowledge(payload: KnowledgeRequest) -> dict[str, Any]:
+    return await knowledge_tool.answer(payload.query, payload.source)
+
+
+@app.post("/search")
+async def search(payload: SearchRequest) -> dict[str, Any]:
+    return await web_search.search(payload.query, payload.max_results)
+
+
+@app.post("/wikipedia")
+async def wikipedia_summary(payload: WikipediaRequest) -> dict[str, Any]:
+    if payload.get_sections:
+        return await wikipedia.get_sections(payload.query)
+    return await wikipedia.get_summary(payload.query)
+
+
+@app.get("/voice/languages")
+async def voice_languages() -> dict[str, Any]:
+    return {
+        "supported": translation_tool.get_supported_languages(),
+        "current": language_engine.current_language,
+        "auto_detect": language_engine.auto_detect,
+        "user_name": language_engine.user_name,
+        "vocabulary": language_engine.custom_vocabulary,
+    }
+
+
+@app.post("/voice/language")
+async def voice_language(payload: VoiceLanguageRequest) -> dict[str, Any]:
+    language_engine.set_language(payload.language)
+    return {
+        "status": "set",
+        "language": language_engine.current_language,
+        "auto_detect": language_engine.auto_detect,
+        "greeting": language_engine.get_greeting(),
+    }
+
+
+@app.post("/voice/vocabulary")
+async def voice_vocabulary(payload: VoiceVocabularyRequest) -> dict[str, Any]:
+    vocabulary = language_engine.add_vocabulary(payload.words)
+    return {"status": "added", "vocabulary": vocabulary}
+
+
+@app.post("/translate")
+async def translate(payload: TranslateRequest) -> dict[str, Any]:
+    return await translation_tool.translate(payload.text, payload.target_language, payload.source_language)
+
+
 @app.get("/indexer/status")
 def indexer_status() -> dict[str, Any]:
     return {"indexed": file_indexer.indexed_count, "is_running": file_indexer.is_running, "last_error": file_indexer.last_error}
@@ -758,6 +1015,46 @@ def database_status() -> dict[str, Any]:
         scheme = prefix.split("://", 1)[0]
         safe_url = f"{scheme}://***:***@{suffix}"
     return {"status": "connected", "backend": backend, "url": safe_url}
+
+
+@app.get("/health")
+async def health() -> dict[str, Any]:
+    global last_supabase_ok
+
+    async def quick_db_check() -> bool:
+        def probe() -> bool:
+            try:
+                with engine.connect() as connection:
+                    connection.execute(text("SELECT 1"))
+                return True
+            except Exception:
+                return False
+
+        try:
+            return await asyncio.wait_for(asyncio.to_thread(probe), timeout=1.0)
+        except asyncio.TimeoutError:
+            return last_supabase_ok
+
+    if speed_engine.model_warm:
+        ollama_ok = True
+    else:
+        try:
+            ollama_ok = await asyncio.wait_for(check_ollama(), timeout=1.0)
+        except asyncio.TimeoutError:
+            ollama_ok = False
+    supabase_ok = await quick_db_check()
+    last_supabase_ok = supabase_ok
+    return {
+        "status": "online",
+        "timestamp": datetime.utcnow().isoformat(),
+        "ollama": ollama_ok,
+        "supabase": supabase_ok,
+        "connections": connection_manager.get_status(),
+        "speed": speed_engine.get_cache_stats(),
+        "model_warm": speed_engine.model_warm,
+        "model": current_model(),
+        "version": "1.0",
+    }
 
 
 @app.get("/models")
@@ -835,33 +1132,53 @@ def auth_callback(code: str) -> dict[str, str]:
 @app.websocket("/ws/track/{device_id}")
 async def websocket_track(websocket: WebSocket, device_id: str) -> None:
     await manager.connect_tracking(websocket)
+    await connection_manager.connect(websocket, "track", device_id, accept=False)
     try:
         while True:
             payload = await websocket.receive_json()
+            if payload.get("type") in {"pong", "ping"}:
+                connection_manager.update_ping(websocket)
+                if payload.get("type") == "ping":
+                    await websocket.send_json({"type": "pong", "timestamp": time.time()})
+                continue
             updated = update_device_status(device_id, payload)
             await manager.broadcast_tracking({"type": "device_update", "device": updated})
     except WebSocketDisconnect:
         manager.disconnect_tracking(websocket)
+        connection_manager.disconnect(websocket)
         update_device_status(device_id, {"online": False})
 
 
 @app.websocket("/ws/commands/{device_id}")
 async def websocket_commands(websocket: WebSocket, device_id: str) -> None:
     await manager.connect_command(device_id, websocket)
+    await connection_manager.connect(websocket, "commands", device_id, accept=False)
     try:
         while True:
-            message = await websocket.receive_text()
-            await websocket.send_json({"type": "ack", "received": message})
+            payload = await websocket.receive_json()
+            if payload.get("type") in {"pong", "ping"}:
+                connection_manager.update_ping(websocket)
+                if payload.get("type") == "ping":
+                    await websocket.send_json({"type": "pong", "timestamp": time.time()})
+                continue
+            await websocket.send_json({"type": "ack", "received": payload})
     except WebSocketDisconnect:
         manager.disconnect_command(device_id, websocket)
+        connection_manager.disconnect(websocket)
 
 
 @app.websocket("/ws/chat/{session_id}")
 async def websocket_chat(websocket: WebSocket, session_id: str) -> None:
     await manager.connect_chat(session_id, websocket)
+    await connection_manager.connect(websocket, "chat", session_id, accept=False)
     try:
         while True:
             payload = await websocket.receive_json()
+            if payload.get("type") in {"pong", "ping"}:
+                connection_manager.update_ping(websocket)
+                if payload.get("type") == "ping":
+                    await websocket.send_json({"type": "pong", "timestamp": time.time()})
+                continue
             query = payload.get("query", "")
             db = SessionLocal()
             try:
@@ -888,6 +1205,7 @@ async def websocket_chat(websocket: WebSocket, session_id: str) -> None:
             await manager.broadcast_chat(session_id, {"type": "message", "reply": result["reply"]})
     except WebSocketDisconnect:
         manager.disconnect_chat(session_id, websocket)
+        connection_manager.disconnect(websocket)
 
 
 @app.websocket("/ws/wayne/events")
@@ -949,7 +1267,11 @@ async def _run_voice_turn(websocket: WebSocket, session: VoiceSession, transcrip
 async def _finish_voice_utterance(websocket: WebSocket, session: VoiceSession, transcript_override: str | None = None) -> None:
     await websocket.send_json({"type": "transcribing"})
     try:
-        transcript = transcript_override.strip() if transcript_override else await session.transcribe()
+        transcription = (
+            {"text": transcript_override.strip(), "language": session.language, "language_name": SUPPORTED_LANGUAGES.get(session.language, {}).get("name", session.language), "confidence": 1.0}
+            if transcript_override
+            else await session.transcribe()
+        )
     except Exception as exc:
         await websocket.send_json({
             "type": "error",
@@ -957,11 +1279,44 @@ async def _finish_voice_utterance(websocket: WebSocket, session: VoiceSession, t
         })
         await websocket.send_json({"type": "ai_done", "full_text": ""})
         return
+    transcript = str(transcription.get("text", "")).strip()
+    detected_language = str(transcription.get("language") or "en")
+    confidence = float(transcription.get("confidence") or 0.0)
     if not transcript:
-        await websocket.send_json({"type": "transcript", "text": ""})
+        await websocket.send_json({"type": "transcript", "text": "", "language": detected_language, "confidence": confidence})
         await websocket.send_json({"type": "ai_done", "full_text": ""})
         return
-    await websocket.send_json({"type": "transcript", "text": transcript})
+    db_for_log = SessionLocal()
+    try:
+        db_for_log.add(
+            VoiceTranscription(
+                session_id=session.session_id,
+                original_text=transcript,
+                detected_language=detected_language,
+                confidence=confidence,
+            )
+        )
+        db_for_log.commit()
+    except Exception:
+        db_for_log.rollback()
+    finally:
+        db_for_log.close()
+    await websocket.send_json({
+        "type": "transcript",
+        "text": transcript,
+        "language": detected_language,
+        "language_name": SUPPORTED_LANGUAGES.get(detected_language, {}).get("name", detected_language),
+        "confidence": confidence,
+    })
+    if confidence < 0.35 and not transcript_override:
+        retry_message = {
+            "ta": "தெளிவாக கேட்கவில்லை. மீண்டும் சொல்லுங்கள்.",
+            "hi": "मुझे स्पष्ट नहीं सुना। कृपया फिर से बोलिए।",
+            "en": "I did not catch that clearly. Please repeat it once.",
+        }.get(detected_language, "I did not catch that clearly. Please repeat it once.")
+        await websocket.send_json({"type": "low_confidence", "message": retry_message, "confidence": confidence})
+        await websocket.send_json({"type": "ai_done", "full_text": retry_message, "language": detected_language})
+        return
     lowered = transcript.strip().lower()
     if lowered in {"stop", "that's enough", "thats enough"}:
         await websocket.send_json({"type": "ai_done", "full_text": "Voice session stopped."})
@@ -997,18 +1352,30 @@ async def _finish_voice_utterance(websocket: WebSocket, session: VoiceSession, t
         await websocket.send_json({"type": "ai_token", "token": full_text})
         await websocket.send_json({"type": "ai_done", "full_text": full_text})
         return
-    session.current_stream = asyncio.create_task(_run_voice_turn(websocket, session, transcript))
+    session.current_stream = asyncio.create_task(_run_voice_turn(websocket, session, f"[LANG:{detected_language}] [VOICE] {transcript}"))
 
 
 @app.websocket("/ws/voice/{session_id}")
 async def websocket_voice(websocket: WebSocket, session_id: str) -> None:
     await websocket.accept()
+    await connection_manager.connect(websocket, "voice", session_id, accept=False)
     session = VoiceSession(session_id)
-    await websocket.send_json({"type": "ready", "message": "W.A.Y.N.E voice ready"})
+    await websocket.send_json({
+        "type": "ready",
+        "message": "W.A.Y.N.E voice ready",
+        "language": language_engine.current_language,
+        "auto_detect": language_engine.auto_detect,
+        "languages": translation_tool.get_supported_languages(),
+    })
     try:
         while True:
             payload = await websocket.receive_json()
             message_type = payload.get("type")
+            if message_type in {"pong", "ping"}:
+                connection_manager.update_ping(websocket)
+                if message_type == "ping":
+                    await websocket.send_json({"type": "pong", "timestamp": time.time()})
+                continue
             if message_type == "audio_chunk":
                 try:
                     chunk = base64.b64decode(payload.get("data", ""))
@@ -1022,9 +1389,26 @@ async def websocket_voice(websocket: WebSocket, session_id: str) -> None:
                 if transcript_text or session.audio_buffer:
                     session.cancel_stream()
                     await _finish_voice_utterance(websocket, session, transcript_text or None)
+                else:
+                    await websocket.send_json({"type": "no_speech", "message": "No speech audio received."})
+                    await websocket.send_json({"type": "ai_done", "full_text": ""})
             elif message_type == "interrupt":
                 session.cancel_stream()
                 await websocket.send_json({"type": "interrupted", "message": "Listening..."})
+            elif message_type == "set_language":
+                lang = str(payload.get("language", "auto"))
+                language_engine.set_language(lang)
+                session.language = lang
+                await websocket.send_json({
+                    "type": "language_set",
+                    "language": lang,
+                    "greeting": language_engine.get_greeting(lang),
+                    "auto_detect": language_engine.auto_detect,
+                })
+            elif message_type == "add_vocabulary":
+                words = [str(word) for word in payload.get("words", [])]
+                vocab = language_engine.add_vocabulary(words)
+                await websocket.send_json({"type": "vocabulary_added", "count": len(words), "vocabulary": vocab})
             elif message_type == "device_confirm":
                 command = str(payload.get("command", "")).strip().lower()
                 device_id = str(payload.get("device_id", "laptop-001")).strip()
@@ -1038,3 +1422,4 @@ async def websocket_voice(websocket: WebSocket, session_id: str) -> None:
                 return
     except WebSocketDisconnect:
         session.cancel_stream()
+        connection_manager.disconnect(websocket)

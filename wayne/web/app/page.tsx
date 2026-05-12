@@ -4,8 +4,11 @@ import { Activity, CalendarPlus, Clock3, Cpu, FileSearch, ListTodo, MessageSquar
 import { useEffect, useState } from "react";
 import { CalendarPanel } from "../components/CalendarPanel";
 import { ChatWindow } from "../components/ChatWindow";
+import { ConnectionStatus } from "../components/ConnectionStatus";
+import { DateTimeWidget } from "../components/DateTimeWidget";
 import { FilePanel } from "../components/FilePanel";
 import { InputBar } from "../components/InputBar";
+import { KnowledgePanel } from "../components/KnowledgePanel";
 import { Sidebar } from "../components/Sidebar";
 import { TaskPanel } from "../components/TaskPanel";
 import { DevicePanel } from "../components/DevicePanel";
@@ -14,6 +17,7 @@ import { LearningDashboard } from "../components/LearningDashboard";
 import { FileManager } from "../components/FileManager";
 import { PCManagerPanel } from "../components/PCManagerPanel";
 import { useWayne } from "../hooks/useWayne";
+import { useConnection } from "../hooks/useConnection";
 
 const quickActions = [
   { label: "Ask W.A.Y.N.E", icon: MessageSquare },
@@ -36,7 +40,7 @@ function Header() {
   }, []);
 
   return (
-    <header className="wayne-border flex h-16 items-center justify-between bg-surface px-5">
+    <header className="wayne-border flex h-16 shrink-0 items-center justify-between bg-surface px-5">
       <div>
         <div className="font-heading text-2xl tracking-[4px] text-cyan">W.A.Y.N.E</div>
         <div className="mt-0.5 text-[10px] text-amber">Wireless Artificial Yielding Network Engine</div>
@@ -62,7 +66,7 @@ function Footer() {
     return () => clearInterval(id);
   }, []);
   return (
-    <footer className="wayne-border flex h-10 items-center justify-between bg-surface px-5 text-xs text-cyan/60">
+    <footer className="wayne-border flex h-10 shrink-0 items-center justify-between gap-4 bg-surface px-5 text-xs text-cyan/60">
       <span>W.A.Y.N.E v1.0 — Wireless Artificial Yielding Network Engine</span>
       <span className="text-cyan">{tickers[index]}</span>
       <span>QWEN 2.5 LOCAL ENGINE</span>
@@ -71,7 +75,8 @@ function Footer() {
 }
 
 export default function Home() {
-  const { messages, loading, toast, sendMessage, setToast } = useWayne();
+  const { messages, loading, streaming, toast, sendMessage, setToast } = useWayne();
+  const connection = useConnection("web");
   const [activeView, setActiveView] = useState("Chat");
 
   useEffect(() => {
@@ -81,12 +86,13 @@ export default function Home() {
   }, [toast, setToast]);
 
   return (
-    <main className="h-screen overflow-hidden bg-background p-3 text-cyan-50">
-      <div className="grid h-full grid-rows-[64px_1fr_40px] gap-3">
+    <main className="h-dvh min-h-0 overflow-hidden bg-background p-3 text-cyan-50">
+      <div className="grid h-full min-h-0 grid-rows-[36px_64px_minmax(0,1fr)_40px] gap-3">
+        <ConnectionStatus status={connection.status} health={connection.health} reconnectAttempt={connection.reconnectAttempt} onRetry={connection.retry} />
         <Header />
-        <div className="grid min-h-0 grid-cols-[220px_minmax(0,1fr)_200px] gap-3">
+        <div className="grid min-h-0 grid-cols-[240px_minmax(520px,1fr)_260px] gap-3 overflow-hidden">
           <Sidebar active={activeView} onSelect={setActiveView} />
-          <section className="flex min-h-0 flex-col gap-3">
+          <section className="flex min-h-0 min-w-0 flex-col gap-3 overflow-hidden">
             {activeView === "Learning" ? (
               <LearningDashboard />
             ) : activeView === "Files" ? (
@@ -95,28 +101,32 @@ export default function Home() {
               <PCManagerPanel />
             ) : (
               <>
-                <div className="wayne-border flex flex-wrap items-center gap-2 bg-surface p-3">
+                <div className="wayne-border grid shrink-0 grid-cols-[repeat(auto-fit,minmax(150px,1fr))] items-center gap-2 bg-surface p-3">
                   {quickActions.map((action) => {
                     const Icon = action.icon;
                     return (
-                      <button key={action.label} onClick={() => sendMessage(action.label)} className="wayne-border flex items-center gap-2 bg-panel px-3 py-2 text-xs text-cyan hover:border-cyan">
+                      <button key={action.label} onClick={() => sendMessage(action.label)} className="wayne-border flex h-10 items-center justify-center gap-2 bg-panel px-3 text-xs text-cyan hover:border-cyan">
                         <Icon size={15} />
                         {action.label}
                       </button>
                     );
                   })}
-                  <div className="ml-auto flex items-center gap-2 text-xs text-success">
+                  <div className="flex h-10 items-center justify-center gap-2 text-xs text-success">
                     <Activity size={15} />
                     Shared backend active
                   </div>
                 </div>
-                <ChatWindow messages={messages} loading={loading} />
-                <TrackingView />
+                <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto pr-1">
+                  <ChatWindow messages={messages} loading={loading} streaming={streaming} />
+                  <TrackingView />
+                </div>
                 <InputBar onSend={sendMessage} loading={loading} />
               </>
             )}
           </section>
-          <aside className="wayne-border flex min-h-0 flex-col gap-5 overflow-y-auto bg-surface p-3">
+          <aside className="wayne-border flex min-h-0 min-w-0 flex-col gap-4 overflow-y-auto bg-surface p-3">
+            <DateTimeWidget />
+            <KnowledgePanel />
             <TaskPanel />
             <CalendarPanel />
             <FilePanel onOpenFile={(path) => sendMessage(`Open file: ${path}`)} />

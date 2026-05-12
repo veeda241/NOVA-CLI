@@ -11,6 +11,17 @@ export async function POST(request: NextRequest) {
       body: JSON.stringify(payload),
       cache: "no-store"
     });
+    const contentType = response.headers.get("content-type") || "";
+    if (contentType.includes("text/event-stream") && response.body) {
+      return new Response(response.body, {
+        status: response.status,
+        headers: {
+          "Content-Type": "text/event-stream",
+          "Cache-Control": "no-cache",
+          Connection: "keep-alive"
+        }
+      });
+    }
     const data = await response.json();
     return NextResponse.json(data, { status: response.status });
   } catch {

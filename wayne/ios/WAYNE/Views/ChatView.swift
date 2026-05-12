@@ -76,11 +76,20 @@ struct ChatView: View {
         let user = Message(role: "user", content: query)
         messages.append(user)
         loading = true
+        let assistantId = UUID()
+        messages.append(Message(id: assistantId, role: "assistant", content: ""))
         Task {
             let apiMessages = messages.map { ["role": $0.role, "content": $0.content] }
-            let result = await WAYNEService.shared.sendMessageResult(query: query, messages: apiMessages, previousInteractionId: lastInteractionId)
+            let result = await WAYNEService.shared.streamMessage(query: query, messages: apiMessages, previousInteractionId: lastInteractionId) { token in
+                if let index = messages.firstIndex(where: { $0.id == assistantId }) {
+                    let current = messages[index].content
+                    messages[index] = Message(id: assistantId, role: "assistant", content: current + token)
+                }
+            }
             lastInteractionId = result.interactionId
-            messages.append(Message(role: "assistant", content: result.reply, interactionId: result.interactionId))
+            if let index = messages.firstIndex(where: { $0.id == assistantId }) {
+                messages[index] = Message(id: assistantId, role: "assistant", content: result.reply, interactionId: result.interactionId)
+            }
             loading = false
         }
     }

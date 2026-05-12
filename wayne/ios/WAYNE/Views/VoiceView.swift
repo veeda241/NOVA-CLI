@@ -5,6 +5,7 @@ struct VoiceView: View {
     @StateObject private var voice = VoiceService()
     @State private var pulse = false
     @State private var rotation = 0.0
+    @State private var selectedLanguage = "auto"
 
     var onDismissTranscript: (String) -> Void
 
@@ -12,6 +13,18 @@ struct VoiceView: View {
         ZStack {
             Color.wayneBackground.ignoresSafeArea()
             VStack(spacing: 28) {
+                Picker("Language", selection: $selectedLanguage) {
+                    Text("Auto").tag("auto")
+                    Text("English").tag("en")
+                    Text("Tamil").tag("ta")
+                    Text("Hindi").tag("hi")
+                    Text("Telugu").tag("te")
+                    Text("French").tag("fr")
+                    Text("Spanish").tag("es")
+                }
+                .pickerStyle(.segmented)
+                .padding(.horizontal)
+                .onChange(of: selectedLanguage) { voice.setLanguage($0) }
                 Spacer()
                 orb
                 Text(statusText)
@@ -86,6 +99,9 @@ struct VoiceView: View {
     private var transcriptView: some View {
         VStack(spacing: 10) {
             wordLine(text: voice.liveTranscript, color: .wayneAccent)
+            Text("\(voice.detectedLanguage.uppercased()) | confidence \(Int(voice.confidence * 100))%")
+                .font(.caption.monospaced())
+                .foregroundStyle(voice.confidence >= 0.5 ? Color.wayneAccent.opacity(0.65) : Color.wayneRed)
             wordLine(text: voice.aiResponse, color: .wayneAmber)
         }
         .frame(maxWidth: .infinity)

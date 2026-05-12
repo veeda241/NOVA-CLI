@@ -48,6 +48,57 @@ final class WAYNEService {
         await sendMessageResult(query: query, messages: messages).reply
     }
 
+    func streamMessage(
+        query: String,
+        messages: [[String: String]],
+        previousInteractionId: Int? = nil,
+        onToken: @escaping @MainActor (String) -> Void
+    ) async -> ChatResult {
+        struct RequestBody: Encodable {
+            let query: String
+            let messages: [[String: String]]
+            let sessionId: String
+            let previousInteractionId: Int?
+            let stream: Bool
+            enum CodingKeys: String, CodingKey {
+                case query, messages, stream
+                case sessionId = "session_id"
+                case previousInteractionId = "prev_interaction_id"
+            }
+        }
+        var request = URLRequest(url: Config.backendURL.appendingPathComponent("chat"))
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try? JSONEncoder().encode(
+            RequestBody(query: query, messages: messages, sessionId: "ios", previousInteractionId: previousInteractionId, stream: true)
+        )
+
+        do {
+            let (bytes, response) = try await URLSession.shared.bytes(for: request)
+            guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+                return ChatResult(reply: "[OFFLINE MODE] [AI RESPONSE] W.A.Y.N.E backend unavailable.", interactionId: nil)
+            }
+            var reply = ""
+            var interactionId: Int?
+            for try await line in bytes.lines {
+                guard line.hasPrefix("data: "),
+                      let data = line.dropFirst(6).data(using: .utf8),
+                      let event = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+                else { continue }
+                if event["type"] as? String == "token", let token = event["token"] as? String {
+                    reply += token
+                    await onToken(token)
+                }
+                if event["type"] as? String == "done" {
+                    interactionId = event["interaction_id"] as? Int
+                }
+            }
+            return ChatResult(reply: reply, interactionId: interactionId)
+        } catch {
+            return ChatResult(reply: "[OFFLINE MODE] [AI RESPONSE] W.A.Y.N.E backend unavailable.", interactionId: nil)
+        }
+    }
+
     func submitFeedback(interactionId: Int, score: Int) async {
         struct Body: Encodable { let interactionId: Int; let score: Int
             enum CodingKeys: String, CodingKey { case score; case interactionId = "interaction_id" }
@@ -78,6 +129,18 @@ final class WAYNEService {
 
     func getEvents() async -> [CalendarEvent] {
         (try? await request("events/today")) ?? []
+    }
+
+    func getDateInfo() async -> DateInfo {
+        (try? await request("datetime")) ?? DateInfo.fallback
+    }
+
+    func getTodaySpecialDays() async -> SpecialDaysResponse {
+        (try? await request("special-days/today?country=IN")) ?? SpecialDaysResponse.empty
+    }
+
+    func getUpcomingSpecialDays() async -> [SpecialDay] {
+        (try? await request("special-days/upcoming?days=7&country=IN")) ?? []
     }
 
     func getDeviceStatus() async -> [DeviceStatus] {
@@ -177,6 +240,72 @@ final class WAYNEService {
 }
 
 struct EmptyResponse: Decodable {}
+
+struct DateInfo: Decodable {
+    let time12h: String
+    let dayName: String
+    let monthName: String
+    let dayNumber: Int
+    let year: Int
+    let weekNumber: Int
+    let dayOfYear: Int
+
+    enum CodingKeys: String, CodingKey {
+        case time12h = "time_12h"
+        case dayName = "day_name"
+        case monthName = "month_name"
+        case dayNumber = "day_number"
+        case year
+        case weekNumber = "week_number"
+        case dayOfYear = "day_of_year"
+    }
+
+    static var fallback: DateInfo {
+        let now = Date()
+        let calendar = Calendar.current
+        let formatter = DateFormatter()
+        formatter.dateFormat = "hh:mm a"
+        let dayFormatter = DateFormatter()
+        dayFormatter.dateFormat = "EEEE"
+        let monthFormatter = DateFormatter()
+        monthFormatter.dateFormat = "MMMM"
+        return DateInfo(
+            time12h: formatter.string(from: now),
+            dayName: dayFormatter.string(from: now),
+            monthName: monthFormatter.string(from: now),
+            dayNumber: calendar.component(.day, from: now),
+            year: calendar.component(.year, from: now),
+            weekNumber: calendar.component(.weekOfYear, from: now),
+            dayOfYear: calendar.ordinality(of: .day, in: .year, for: now) ?? 1
+        )
+    }
+}
+
+struct SpecialDaysResponse: Decodable {
+    let specialDays: [SpecialDay]
+    let hasSpecialDay: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case specialDays = "special_days"
+        case hasSpecialDay = "has_special_day"
+    }
+
+    static let empty = SpecialDaysResponse(specialDays: [], hasSpecialDay: false)
+}
+
+struct SpecialDay: Decodable, Identifiable {
+    var id: String { "\(name)-\(date ?? formattedDate ?? "")" }
+    let name: String
+    let date: String?
+    let formattedDate: String?
+    let daysAway: Int?
+
+    enum CodingKeys: String, CodingKey {
+        case name, date
+        case formattedDate = "formatted_date"
+        case daysAway = "days_away"
+    }
+}
 
 struct AnyEncodable: Encodable {
     private let encodeValue: (Encoder) throws -> Void
