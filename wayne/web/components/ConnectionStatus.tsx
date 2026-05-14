@@ -15,7 +15,8 @@ export function ConnectionStatus({
   onRetry: () => void;
 }) {
   const speed = health?.speed ?? {};
-  const connected = status === "connected" && health?.status !== "offline";
+  const backendOnline = health?.status === "online";
+  const connected = (status === "connected" || backendOnline) && health?.status !== "offline";
   const color = connected ? "text-success border-success/40" : status === "reconnecting" ? "text-amber border-amber/50" : "text-red border-red/50";
   const label = connected
     ? "W.A.Y.N.E ONLINE"

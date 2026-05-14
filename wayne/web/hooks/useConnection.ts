@@ -12,18 +12,24 @@ export function useConnection(sessionId: string) {
   const managerRef = useRef<ReturnType<typeof createConnectionManager> | null>(null);
 
   useEffect(() => {
+    let active = true;
     const manager = createConnectionManager(sessionId);
     managerRef.current = manager;
-    manager.on("connected", () => setStatus("connected"));
-    manager.on("disconnected", () => setStatus("disconnected"));
+    manager.on("connected", () => active && setStatus("connected"));
+    manager.on("disconnected", () => active && setStatus("disconnected"));
     manager.on("reconnecting", ({ attempt }: any) => {
+      if (!active) return;
       setStatus("reconnecting");
       setReconnectAttempt(attempt);
     });
-    manager.on("offline", () => setStatus("offline"));
-    manager.on("health", (data: any) => setHealth(data));
-    manager.connect(`/ws/chat/${sessionId}`).catch(() => setStatus("disconnected"));
-    return () => manager.disconnect();
+    manager.on("offline", () => active && setStatus("offline"));
+    manager.on("health", (data: any) => active && setHealth(data));
+    manager.refreshHealth();
+    manager.connect(`/ws/chat/${sessionId}`).catch(() => active && setStatus("disconnected"));
+    return () => {
+      active = false;
+      manager.disconnect();
+    };
   }, [sessionId]);
 
   const send = useCallback((data: any) => managerRef.current?.send(data) ?? false, []);

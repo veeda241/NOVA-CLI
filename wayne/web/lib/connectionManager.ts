@@ -2,6 +2,9 @@
 
 type Listener = (data: any) => void;
 
+const API_URL = process.env.NEXT_PUBLIC_WAYNE_API_URL || "http://localhost:8000";
+const WS_URL = API_URL.replace("http://", "ws://").replace("https://", "wss://");
+
 class WAYNEConnectionManager {
   private ws: WebSocket | null = null;
   private endpoint = "";
@@ -13,6 +16,7 @@ class WAYNEConnectionManager {
   private messageQueue: any[] = [];
   private listeners = new Map<string, Listener[]>();
   private online = false;
+  private disposed = false;
 
   constructor(private sessionId: string) {
     if (typeof window !== "undefined") {
@@ -24,8 +28,9 @@ class WAYNEConnectionManager {
 
   connect(endpoint: string): Promise<void> {
     this.endpoint = endpoint;
+    this.disposed = false;
     return new Promise((resolve, reject) => {
-      const url = `ws://localhost:8000${endpoint}`;
+      const url = `${WS_URL}${endpoint}`;
       const socket = new WebSocket(url);
       this.ws = socket;
 
@@ -53,6 +58,7 @@ class WAYNEConnectionManager {
       };
 
       socket.onclose = (event) => {
+        if (this.disposed) return;
         this.online = false;
         this.stopPing();
         this.emit("disconnected", { code: event.code });
@@ -60,6 +66,7 @@ class WAYNEConnectionManager {
       };
 
       socket.onerror = () => {
+        if (this.disposed) return;
         this.online = false;
         this.emit("error", {});
         reject(new Error("WebSocket connection failed"));
@@ -81,6 +88,7 @@ class WAYNEConnectionManager {
   }
 
   disconnect() {
+    this.disposed = true;
     this.stopPing();
     if (this.healthInterval) clearInterval(this.healthInterval);
     this.ws?.close(1000, "Client disconnecting");
@@ -101,11 +109,18 @@ class WAYNEConnectionManager {
     };
   }
 
+  refreshHealth() {
+    void this.checkHealth();
+  }
+
   private scheduleReconnect() {
+    if (this.disposed) return;
     this.reconnectAttempts += 1;
     const delay = Math.min(this.reconnectDelay * Math.pow(1.5, this.reconnectAttempts - 1), this.maxReconnectDelay);
     this.emit("reconnecting", { attempt: this.reconnectAttempts, delay });
-    window.setTimeout(() => this.reconnect(), delay);
+    window.setTimeout(() => {
+      if (!this.disposed) this.reconnect();
+    }, delay);
   }
 
   private handleOffline() {
@@ -126,19 +141,24 @@ class WAYNEConnectionManager {
   }
 
   private startHealthCheck() {
-    this.healthInterval = setInterval(async () => {
-      try {
-        const response = await fetch("http://localhost:8000/health", {
-          cache: "no-store",
-          signal: AbortSignal.timeout(3000)
-        });
-        const data = await response.json();
-        this.emit("health", data);
-        if (!this.online) this.reconnect();
-      } catch {
-        this.emit("health", { status: "offline" });
-      }
+    this.healthInterval = setInterval(() => {
+      void this.checkHealth();
     }, 3000);
+  }
+
+  private async checkHealth() {
+    if (this.disposed) return;
+    try {
+      const response = await fetch("/api/health", {
+        cache: "no-store",
+        signal: AbortSignal.timeout(3000)
+      });
+      const data = await response.json();
+      this.emit("health", data);
+      if (!this.online) this.reconnect();
+    } catch {
+      this.emit("health", { status: "offline" });
+    }
   }
 
   private flushQueue() {

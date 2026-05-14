@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import ast
+import operator
+import re
+
 from tools.datetime_tool import datetime_tool
 from tools.special_days import special_days_engine
 from tools.web_search_tool import web_search
@@ -41,6 +45,9 @@ class KnowledgeTool:
 
     async def answer(self, query: str, source: str = "auto") -> dict:
         lowered = query.lower()
+        arithmetic = self._answer_arithmetic(lowered)
+        if arithmetic:
+            return arithmetic
         if source == "local" or self._is_datetime_query(lowered):
             return await self._answer_datetime(query)
         if self._is_special_day_query(lowered):
@@ -130,6 +137,62 @@ class KnowledgeTool:
             if key in lowered:
                 return zone
         return "Asia/Kolkata"
+
+    def _answer_arithmetic(self, lowered: str) -> dict | None:
+        expression = lowered
+        replacements = {
+            "what is": "",
+            "what's": "",
+            "calculate": "",
+            "answer": "",
+            "plus": "+",
+            "minus": "-",
+            "times": "*",
+            "multiplied by": "*",
+            "x": "*",
+            "divided by": "/",
+            "over": "/",
+            "to the power of": "**",
+        }
+        for old, new in replacements.items():
+            expression = expression.replace(old, new)
+        expression = expression.replace("?", "").strip()
+        if not re.fullmatch(r"[0-9\s+\-*/().%]+", expression):
+            return None
+        if not re.search(r"[+\-*/%]", expression):
+            return None
+        try:
+            value = self._safe_eval(expression)
+        except Exception:
+            return None
+        if isinstance(value, float) and value.is_integer():
+            value = int(value)
+        return {"answer": f"The answer is {value}.", "source": "local_math", "data": {"expression": expression, "value": value}}
+
+    def _safe_eval(self, expression: str) -> int | float:
+        allowed = {
+            ast.Add: operator.add,
+            ast.Sub: operator.sub,
+            ast.Mult: operator.mul,
+            ast.Div: operator.truediv,
+            ast.Mod: operator.mod,
+            ast.Pow: operator.pow,
+            ast.USub: operator.neg,
+            ast.UAdd: operator.pos,
+        }
+
+        def eval_node(node):
+            if isinstance(node, ast.Expression):
+                return eval_node(node.body)
+            if isinstance(node, ast.Constant) and isinstance(node.value, (int, float)):
+                return node.value
+            if isinstance(node, ast.BinOp) and type(node.op) in allowed:
+                return allowed[type(node.op)](eval_node(node.left), eval_node(node.right))
+            if isinstance(node, ast.UnaryOp) and type(node.op) in allowed:
+                return allowed[type(node.op)](eval_node(node.operand))
+            raise ValueError("unsupported expression")
+
+        return eval_node(ast.parse(expression, mode="eval"))
 
 
 knowledge_tool = KnowledgeTool()
